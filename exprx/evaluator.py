@@ -32,20 +32,30 @@ class Evaluator:
             return self._compare(node[1], self._eval(node[2]), self._eval(node[3]))
         if kind == "and":
             left = self._eval(node[1])
-            right = self._eval(node[2])
-            return bool(left) and bool(right)
+            if not left:
+                return False
+            return bool(self._eval(node[2]))
         if kind == "or":
             left = self._eval(node[1])
-            right = self._eval(node[2])
-            return bool(left) or bool(right)
+            if left:
+                return True
+            return bool(self._eval(node[2]))
         if kind == "let":
             return self._eval_let(node)
         raise ValueError(f"未知节点: {kind}")
 
     def _eval_let(self, node):
         _, name, value_node, body = node
-        self._env[name] = self._eval(value_node)
-        return self._eval(body)
+        had_binding = name in self._env
+        saved = self._env.get(name)
+        try:
+            self._env[name] = self._eval(value_node)
+            return self._eval(body)
+        finally:
+            if had_binding:
+                self._env[name] = saved
+            else:
+                self._env.pop(name, None)
 
     def _binary(self, op, left, right):
         if op == "+":
@@ -57,9 +67,9 @@ class Evaluator:
         if op == "/":
             return left / right
         if op == "//":
-            return int(left / right)
+            return left // right
         if op == "%":
-            return left - int(left / right) * right
+            return left % right
         if op == "^":
             return left ** right
         raise ValueError(f"未知运算符: {op}")
