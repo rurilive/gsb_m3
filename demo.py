@@ -1,7 +1,9 @@
-"""命令栈现状演示。
+"""命令栈演示。
 
 第一段：一段文案的三次编辑，逐步 undo / redo。
 第二段：undo 之后继续编辑，展示重做分支被截断。
+第三段：事务——一组编辑整体提交或回滚。
+第四段：插入合并——连打一串字母只占一条历史。
 """
 
 from editstack.commands import Buffer, DeleteText, InsertText
@@ -40,9 +42,29 @@ def main():
     show("新编辑", doc)
     print(f"  新编辑后 can_redo = {stack.can_redo}（原重做分支已丢弃）")
 
-    # TODO(事务与合并): 实现后在这里演示两件事：
-    # 1) begin/rollback：一组编辑整体撤销，文本回到事务前的样子；
-    # 2) coalesce_window_ms：连打一串字母只占一条历史，undo 一步撤掉整段。
+    print("\n=== 事务：一组编辑整体回退 ===")
+    stack.begin()
+    stack.execute(InsertText(doc, len(doc.text), "，先停旧集群"))
+    stack.execute(InsertText(doc, len(doc.text), "，再切流量"))
+    show("事务内", doc)
+    stack.rollback()
+    show("rollback", doc)
+    stack.begin()
+    stack.execute(InsertText(doc, len(doc.text), "，先扩容"))
+    stack.execute(InsertText(doc, len(doc.text), "，再切换"))
+    stack.commit()
+    show("commit ", doc)
+    stack.undo()
+    show("undo 一步撤整批", doc)
+
+    print("\n=== 合并：连打字母只占一条历史 ===")
+    typed = Buffer("typed", "版本：")
+    typing = EditStack(coalesce_window_ms=800)
+    for ch in "v2.0":
+        typing.execute(InsertText(typed, len(typed.text), ch))
+    show("连打后", typed)
+    typing.undo()
+    show("undo 一步", typed)
 
 
 if __name__ == "__main__":
