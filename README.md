@@ -25,3 +25,44 @@
 ```bash
 python3 demo.py
 ```
+
+## 测试报告
+
+测试文件：`tests/test_interval.py`（标准库 unittest）。
+运行方式（仓库根目录，可独立重复运行）：
+
+```bash
+python3 -m unittest tests.test_interval -v
+python3 tests/test_interval.py
+```
+
+共 20 个用例：15 绿 5 红。红用例及其对应缺陷、修复方向：
+
+1. `TestInsertOverlap.test_endpoint_touching_insert_rejected`（红）
+   - 缺陷：`_has_overlap` 用严格不等号 `node.start < end and node.end > start`
+     判定重叠，端点相接（`start == 对方 end`）被误判为不重叠，本该报
+     `OverlapError` 的插入被放行（违反语义 2）。
+   - 修复方向：改为闭区间相交条件 `node.start <= end and node.end >= start`。
+2. `TestInsertOverlap.test_duplicate_zero_length_interval_rejected`（红）
+   - 缺陷：同一判定用严格不等号，相同退化点区间（如 `[4,4]` 重复插入）
+     判为不重叠而被放行（违反语义 2）；与上一条同源。
+   - 修复方向：同上，改为闭区间相交条件后重复点区间即按重叠拒绝。
+3. `TestRemove.test_remove_missing_raises_keyerror_and_tree_unchanged`（红）
+   - 缺陷：`_delete` 走到 `None` 时静默返回，`remove` 不抛 `KeyError`，且
+     `_size -= 1` 无条件执行，删除不存在的区间会把计数减坏（违反语义 3、6、7）。
+   - 修复方向：删除前先查找确认区间存在，不存在抛 `KeyError` 且不动 `_size`。
+4. `TestRemove.test_remove_two_child_node_keeps_other_intervals`（红）
+   - 缺陷：删除有两个孩子的节点时，用后继覆盖当前节点后直接令
+     `node.right = succ.right`，后继节点本身未被摘除，后继区间丢失、树结构
+     损坏、`len` 失真（违反语义 3、6、7，对应「删过几轮后查不到」的现象）。
+   - 修复方向：覆盖后继值后先从右子树递归删除该后继，再 `_pull_up`。
+5. `TestQueryRange.test_query_range_endpoint_hi_touch`（红）
+   - 缺陷：`_collect_range` 用 `node.start < hi` 判定相交，`s == hi`
+     （如 `[5,8]` 查 `[1,5]`）时漏收区间（违反语义 4；`e == lo` 的另一侧
+     用 `node.end >= lo`，判定正确）。
+   - 修复方向：改为 `node.start <= hi and node.end >= lo`。
+
+其余 15 个用例（参数校验、内部重叠拒绝、重复区间拒绝、重叠插入后树不变、
+正常删除与再插入、查询排序与过滤、`point_query` 端点覆盖等）全部为绿。
+`python3 demo.py` 已验证照常跑通，本次未改动 `intervaltree/` 与 `demo.py`
+任何一行。
