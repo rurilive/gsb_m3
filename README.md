@@ -26,3 +26,12 @@
 python3 demo.py                          # 段级 glob 演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- `pathmatch/ignore.py` 新增 `IgnoreRules(text, base)` 与 `matched(relpath, is_dir, rule_stack)`，不改动 `match`。
+- 解析：`#`/空行注释，`\` 转义 `#`、`!`、尾随空格；`!` 否定；尾 `/` 目录限定。
+- 模式含 `/` 锚定到 base，否则匹配任意层级同名路径；`**/`、`/**`、`/**/` 跨段。
+- 每条规则编译成正则逐段匹配，段内 `*`/`?`/`[...]` 语义不变。
+- `matched` 深层规则文件优先、同文件后写优先；路径无命中时逐级查父目录（视为目录）。
+- 返回 `('ignored'|'allowed', 决定规则)`，无命中为 `('allowed', None)`。

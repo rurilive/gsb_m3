@@ -1,9 +1,12 @@
-"""路径匹配现状演示。
+"""路径匹配演示。
 
 第一段：段级 glob 的行为（* 不跨段、段数对齐）。
-第二段：把源码树里的一批路径按几种 pattern 逐条过一遍。
+第二段：gitignore 风格的 IgnoreRules 过滤（否定、目录限定、嵌套优先）。
 """
 
+import textwrap
+
+from pathmatch.ignore import IgnoreRules, matched
 from pathmatch.match import match
 
 PATTERNS = ["*.py", "src/*.py", "src/*/*.py", "assets/*", "docs/*.md"]
@@ -30,9 +33,38 @@ def main():
     for p in TREE:
         print(f"  {str(match('src/*.py', p)):<5} {p}")
 
-    # TODO(.gitignore 语义): IgnoreRules 实现后，在这里用一组
-    # .gitignore 规则（含否定、目录限定、嵌套优先）重新过滤这批路径，
-    # 展示每条是 ignored 还是 allowed，以及决定性的那条规则。
+    print("\n=== .gitignore 语义：否定、目录限定、嵌套规则优先 ===")
+    root_rules = IgnoreRules(textwrap.dedent("""\
+        # 根目录规则：生成物一律忽略，保留 keep.log
+        *.log
+        build/
+        docs/*.tmp
+        !keep.log
+        """))
+    src_rules = IgnoreRules(textwrap.dedent("""\
+        # src/.gitignore：源码目录里只留 main.py
+        *.py
+        !main.py
+        """), base="src")
+    stack = [root_rules, src_rules]
+    candidates = [
+        ("main.py", False),
+        ("build", True),
+        ("build/out.o", False),
+        ("error.log", False),
+        ("keep.log", False),
+        ("docs/draft.tmp", False),
+        ("src/main.py", False),
+        ("src/core/engine.py", False),
+    ]
+    for path, is_dir in candidates:
+        status, rule = matched(path, is_dir, stack)
+        if rule is None:
+            decided = "（无命中规则）"
+        else:
+            where = rule.base or "."
+            decided = f"决定规则 {rule.line!r} @ {where}/.gitignore"
+        print(f"  {status:<7} {path:<22} {decided}")
 
 
 if __name__ == "__main__":
