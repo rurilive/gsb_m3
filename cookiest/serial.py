@@ -25,6 +25,8 @@ def _to_dict(c: Cookie) -> dict:
         "domain": c.domain,
         "path": c.path,
         "expires": c.expires.isoformat() if c.expires else None,
+        "secure": c.secure,
+        "http_only": c.http_only,
     }
 
 
@@ -35,4 +37,6 @@ def _from_dict(item: dict) -> Cookie:
         domain=item["domain"],
         path=item.get("path", "/"),
         expires=datetime.fromisoformat(item["expires"]) if item["expires"] else None,
+        secure=item.get("secure", False),
+        http_only=item.get("http_only", False),
     )

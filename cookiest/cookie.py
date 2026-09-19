@@ -1,6 +1,6 @@
 """Cookie 值对象与 Set-Cookie 解析。"""
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 _MONTHS = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -51,7 +51,7 @@ def parse_expires(value: str):
         hh, mm, ss = (int(x) for x in parts[4].split(":"))
     except (KeyError, ValueError):
         return None
-    return datetime(year, month, day, hh, mm, ss)
+    return datetime(year, month, day, hh, mm, ss, tzinfo=timezone.utc)
 
 
 def parse_set_cookie(header: str) -> Cookie:

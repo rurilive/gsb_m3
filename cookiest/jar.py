@@ -74,13 +74,19 @@ class CookieJar:
 def _domain_match(host: str, domain: str) -> bool:
     if not domain:
         return True
-    domain = domain.lower()
+    domain = domain.lower().lstrip(".")
     if host == domain:
         return True
-    return host.endswith(domain)
+    return host.endswith("." + domain)
 
 
 def _path_match(request_path: str, cookie_path: str) -> bool:
     if not request_path:
         request_path = "/"
-    return request_path.startswith(cookie_path)
+    if not cookie_path:
+        cookie_path = "/"
+    if request_path == cookie_path:
+        return True
+    if not request_path.startswith(cookie_path):
+        return False
+    return cookie_path.endswith("/") or request_path[len(cookie_path)] == "/"
