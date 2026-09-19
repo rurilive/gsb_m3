@@ -1,5 +1,6 @@
 """批量任务并发执行：固定线程分片处理，单条失败不拖垮整批。"""
 
+import contextvars
 import threading
 
 
@@ -38,7 +39,8 @@ def map_batch(fn, items, workers=4):
     results = [None] * len(items)
     threads = []
     for start, chunk in chunks:
-        t = threading.Thread(target=_run_chunk, args=(fn, chunk, start, results))
+        ctx = contextvars.copy_context()  # 工作线程带上当前链路上下文
+        t = threading.Thread(target=ctx.run, args=(_run_chunk, fn, chunk, start, results))
         t.start()
         threads.append(t)
     for t in threads:

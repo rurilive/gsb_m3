@@ -9,9 +9,13 @@ import threading
 from tracectx import (
     ItemFailure,
     async_call,
+    current_correlation_id,
     first_failure,
+    format_report,
     map_batch,
     run_detached,
+    span,
+    start_trace,
 )
 
 CURRENCIES = {"CNY", "USD", "EUR"}
@@ -68,9 +72,20 @@ def main():
     done.wait(5)
     t.join(5)
 
-    # TODO(调用链追踪): correlation-id 与 span 落地后，把上面这批校验
-    # 串成一条跨线程链路：一条链路一个 id，各段计时、慢段打标记，
-    # 收尾打印树形报告，能看出每条记录卡在哪一段。
+    print("\n=== 跨线程调用链 ===")
+
+    def traced_verify(rec):
+        with span("verify:%s" % rec["id"]):
+            return verify(rec)
+
+    with start_trace(slow_threshold=0.0005) as cid:
+        print("  correlation-id: %s" % cid)
+        with span("map_batch(workers=3)"):
+            map_batch(traced_verify, RECORDS, workers=3)
+        with span("run_detached"):
+            summary2 = run_detached(lambda: "链路内 id=%s" % current_correlation_id())
+        print("  后台任务看到的 id:", summary2)
+        print(format_report())
 
 
 if __name__ == "__main__":
