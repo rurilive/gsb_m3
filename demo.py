@@ -1,6 +1,6 @@
-"""stackvm 现状演示：汇编 -> 反汇编 -> 执行。"""
+"""stackvm 现状演示：汇编 -> 反汇编 -> 执行 -> 调用帧。"""
 
-from stackvm import VM, assemble, disasm
+from stackvm import VM, CallOverflow, assemble, disasm
 
 SUM10 = """
 # 求 1+2+...+10，结果存全局段 0 号槽
@@ -28,6 +28,38 @@ done:
 LOAD_G 0
 PRINT
 HALT
+"""
+
+FIB = """
+# 递归 fib：参数经操作数栈传入，结果留在栈顶；每帧局部段独立
+fib:
+STORE_LOCAL 0      # n
+LOAD_LOCAL 0
+PUSH 2
+LT                 # n < 2 ?
+JZ recurse
+LOAD_LOCAL 0       # 基例：返回 n
+RET
+recurse:
+LOAD_LOCAL 0
+PUSH 1
+SUB
+CALL fib           # fib(n-1)
+STORE_LOCAL 1
+LOAD_LOCAL 0
+PUSH 2
+SUB
+CALL fib           # fib(n-2)
+LOAD_LOCAL 1
+ADD
+RET
+"""
+
+BOMB = """
+# 无限递归：触发调用栈深度上限
+bomb:
+CALL bomb
+RET
 """
 
 ORDER = """
@@ -58,8 +90,14 @@ def main():
     print("\n=== 执行 ORDER（局部段用法） ===")
     print("  output:", VM().run(assemble(ORDER)))
 
-    # TODO(下个版本): CALL/RET 落地后，在这里加一段递归程序（比如 fib），
-    # 演示调用帧、局部段隔离与调用栈深度上限的报错路径。
+    print("\n=== 执行 FIB（递归调用帧，fib(10)） ===")
+    print("  output:", VM().run(assemble("PUSH 10\nCALL fib\nPRINT\nHALT\n" + FIB)))
+
+    print("\n=== 调用栈深度上限（max_call_depth=8 的无限递归） ===")
+    try:
+        VM(max_call_depth=8).run(assemble(BOMB))
+    except CallOverflow as exc:
+        print("  CallOverflow:", exc)
 
 
 if __name__ == "__main__":

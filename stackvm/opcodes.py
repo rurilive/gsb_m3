@@ -23,6 +23,8 @@ OPS = {
     "STORE_LOCAL": (0x25, "u16"),  # 弹栈，存入局部段[编号]
     "PRINT":       (0x26, ""),     # 弹栈，str() 追加到输出
     "HALT":        (0x27, ""),     # 停机
+    "CALL":        (0x28, "u16"),  # 压入新调用帧（返回地址 + 全新局部段），跳转到目标偏移
+    "RET":         (0x29, ""),     # 结束当前帧，回到调用者返回地址；主程序段执行则抛 VmError
 }
 
 BY_CODE = {code: (name, layout) for name, (code, layout) in OPS.items()}

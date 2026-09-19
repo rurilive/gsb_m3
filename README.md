@@ -33,3 +33,12 @@ python3 -m unittest discover -s tests -v # 行为基线测试
 ```
 
 `tests/test_vm.py` 是现有行为的锁定基线。
+
+## 扩展说明
+
+- 新增 `CALL addr` / `RET` 两条指令（操作码 0x28/0x29，操作数沿用 u16 小端），汇编、反汇编由编码表自动支持
+- `CALL` 压入新调用帧：返回地址为 CALL 下一条指令的偏移，局部段全新、与上层帧隔离，随后跳转到 `addr`
+- `RET` 结束当前帧并回到调用者返回地址继续执行；在主程序段执行 `RET` 抛 `VmError`
+- 操作数栈与全局段跨帧共享，参数与返回值经操作数栈传递
+- 调用栈深度上限为 VM 可选参数 `max_call_depth`（默认 64），超限抛 `CallOverflow`（定义在 `stackvm/errors.py`，继承 `VmError`）
+- 行为覆盖见 `tests/test_call.py`（嵌套调用、局部段隔离、深度边界、RET 落点），`demo.py` 末尾有递归 fib 与超限报错演示
