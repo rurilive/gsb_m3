@@ -28,3 +28,14 @@
 python3 demo.py                          # 路由解析演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 优先级：按路由静态段数量降序匹配，静态段数相同按注册顺序（`sorted` 稳定排序保证）。
+- 因此 `/users/new` 无论注册早晚都优先于 `/users/{id}`；同形状并列仍先到先得。
+- 尾斜杠：`Router(trailing="strict")`（默认）要求精确一致，行为与旧版相同。
+- `trailing="redirect"` 时 `resolve` 返回 `(handler, params, need_redirect)`：
+  原路径命中为 `False`；去/补一个尾斜杠后命中为 `True`；两种形态都不中抛 `NotFound`。
+- Http405：方法无匹配时，检查其它方法下是否存在同形状路由（段数相同且静态段逐一相等，
+  参数段不比较值）；存在则抛 `Http405`，`allow` 为按注册顺序去重的方法列表。
+- `Http405` 继承 `NotFound`，旧代码的 `except NotFound` 不受影响；无任何同形状路由仍是 404。
