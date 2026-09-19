@@ -28,3 +28,11 @@ python3 -m unittest discover -s tests -v # 行为基线测试
 ```
 
 `tests/test_framec.py` 是现有行为的锁定基线。
+
+## 扩展说明
+
+- `framec/heartbeat.py` 是按需扩展示例：显式 `import framec.heartbeat` 即注册，不动编解码核心与 `framec` 包默认注册表
+- PING(0x10)/PONG(0x11)：载荷 8 字节大端 u64 单调时间戳（`time.monotonic_ns`），PONG 原样回显 PING 值配对，RTT = 收包时刻 - 回显值
+- VERSION(0x20)：握手互报版本，值 `list[int]`，载荷逗号分隔十进制 ASCII（如 `b"1,3"`），空列表抛 `PayloadError`
+- 新帧值类型撞自动推断规则（int 撞 ACK），编码必须显式传 `ftype`；长度/编码不合法一律抛 `PayloadError`
+- 行为测试见 `tests/test_heartbeat.py`
