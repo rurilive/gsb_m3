@@ -9,10 +9,11 @@ from pathlib import Path
 
 _LEN_HEAD = 2
 _CRC_TAIL = 4
+_MAX_PAYLOAD = 0xFFFF
 
 
 def _unpack_length(head: bytes) -> int:
-    return int.from_bytes(head[:1], "big")
+    return int.from_bytes(head, "little")
 
 
 class WriteAheadLog:
@@ -27,14 +28,51 @@ class WriteAheadLog:
         self._seg_no = 0
         self._fh = None
         self._size = 0
-        self._roll()
+        existing = self._segments()
+        if existing:
+            last = existing[-1]
+            self._seg_no = self._segment_number(last)
+            self._size = self._truncate_torn_tail(last)
+            self._fh = open(last, "ab")
+        else:
+            self._roll()
 
     # ---- 内部：路径与切段 -----------------------------------------------------
     def _segment_path(self, no: int) -> Path:
         return self._dir / f"wal-{no}.log"
 
+    @staticmethod
+    def _segment_number(path: Path) -> int:
+        return int(path.stem.split("-", 1)[1])
+
     def _segments(self) -> list:
-        return sorted(self._dir.glob("wal-*.log"))
+        segs = []
+        for path in self._dir.glob("wal-*.log"):
+            try:
+                segs.append((self._segment_number(path), path))
+            except ValueError:
+                continue
+        return [path for _, path in sorted(segs)]
+
+    def _truncate_torn_tail(self, path: Path) -> int:
+        """截掉活动段尾部的撕裂帧，返回有效字节数。"""
+        offset = 0
+        with open(path, "rb") as f:
+            while True:
+                head = f.read(_LEN_HEAD)
+                if len(head) < _LEN_HEAD:
+                    break
+                length = _unpack_length(head)
+                payload = f.read(length)
+                crc_raw = f.read(_CRC_TAIL)
+                if len(payload) < length or len(crc_raw) < _CRC_TAIL:
+                    break
+                if zlib.crc32(head + payload) != int.from_bytes(crc_raw, "big"):
+                    break
+                offset += _LEN_HEAD + length + _CRC_TAIL
+        with open(path, "r+b") as f:
+            f.truncate(offset)
+        return offset
 
     def _roll(self) -> None:
         if self._fh is not None:
@@ -54,9 +92,14 @@ class WriteAheadLog:
             rec["seq"] = self._seq
             payload = json.dumps(
                 rec, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            if len(payload) > _MAX_PAYLOAD:
+                raise ValueError(
+                    f"record payload too large: {len(payload)} > {_MAX_PAYLOAD}")
             head = struct.pack("<H", len(payload))
             frame = head + payload + struct.pack(">I", zlib.crc32(head + payload))
             self._fh.write(frame)
+            self._fh.flush()
+            os.fsync(self._fh.fileno())
             self._size += len(frame)
             if self._size >= self._max_segment:
                 self._roll()
@@ -96,12 +139,13 @@ class WriteAheadLog:
                     return
                 length = _unpack_length(head)
                 payload = f.read(length)
+                if len(payload) < length:
+                    return
                 crc_raw = f.read(_CRC_TAIL)
                 if len(crc_raw) < _CRC_TAIL:
-                    crc_val = 0
-                else:
-                    crc_val = int.from_bytes(crc_raw, "big")
-                if crc_val and zlib.crc32(head + payload) != crc_val:
+                    return
+                crc_val = int.from_bytes(crc_raw, "big")
+                if zlib.crc32(head + payload) != crc_val:
                     return
                 try:
                     yield json.loads(payload)
