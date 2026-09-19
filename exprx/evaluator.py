@@ -31,21 +31,33 @@ class Evaluator:
         if kind == "cmp":
             return self._compare(node[1], self._eval(node[2]), self._eval(node[3]))
         if kind == "and":
-            left = self._eval(node[1])
-            right = self._eval(node[2])
-            return bool(left) and bool(right)
+            # 短路：左侧为假时右侧不求值
+            if not self._eval(node[1]):
+                return False
+            return bool(self._eval(node[2]))
         if kind == "or":
-            left = self._eval(node[1])
-            right = self._eval(node[2])
-            return bool(left) or bool(right)
+            # 短路：左侧为真时右侧不求值
+            if self._eval(node[1]):
+                return True
+            return bool(self._eval(node[2]))
         if kind == "let":
             return self._eval_let(node)
         raise ValueError(f"未知节点: {kind}")
 
     def _eval_let(self, node):
         _, name, value_node, body = node
+        # let 绑定只在 body 内可见：求值完恢复外层同名绑定（或删除新引入的绑定），
+        # 即使 body 抛异常也要恢复，避免污染后续 evaluate。
+        sentinel = object()
+        saved = self._env.get(name, sentinel)
         self._env[name] = self._eval(value_node)
-        return self._eval(body)
+        try:
+            return self._eval(body)
+        finally:
+            if saved is sentinel:
+                del self._env[name]
+            else:
+                self._env[name] = saved
 
     def _binary(self, op, left, right):
         if op == "+":
@@ -57,9 +69,11 @@ class Evaluator:
         if op == "/":
             return left / right
         if op == "//":
-            return int(left / right)
+            # 向下取整语义，与 Python 一致：-7 // 2 == -4
+            return left // right
         if op == "%":
-            return left - int(left / right) * right
+            # 余数与除数同号，与 Python 一致：-7 % 2 == 1
+            return left % right
         if op == "^":
             return left ** right
         raise ValueError(f"未知运算符: {op}")
