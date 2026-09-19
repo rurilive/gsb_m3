@@ -27,9 +27,11 @@ def main():
     for p in ["car", "hel", "w", "helo"]:
         print(f"  complete({p!r}) -> {t.complete(p)}")
 
-    # TODO(模糊改造): fuzzy 补全实现后，在这里加一段演示：
-    # 用 helo、cary 这类手滑输入展示 fuzzy=k 的召回结果与距离/频率排序，
-    # 对比 fuzzy=None 时同样的输入查不到任何词。
+    print()
+    print("=== 模糊补全（手滑错拼，fuzzy=1） ===")
+    for p in ["helo", "cary"]:
+        print(f"  complete({p!r})          -> {t.complete(p)}")
+        print(f"  complete({p!r}, fuzzy=1) -> {t.complete(p, fuzzy=1)}")
 
 
 if __name__ == "__main__":
