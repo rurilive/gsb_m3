@@ -1,9 +1,9 @@
 """cfgstack: 配置分层合并。defaults < file < env，网关和三个后台任务的启动路径在用。
 
 行为口径（历史形成的，全部要保住，tests/test_cfgstack.py 是清单）：
-- 层合并是深合并：上层只覆盖自己给出的键，同节其他键保留
+- 层排成显式管道，声明顺序即优先级：后声明的覆盖先声明的，同节深合并
 - env 变量名形如 PREFIX__section__key，多段路径用 __ 分隔，值一律当字符串
-- 各 require_* 缺键时的报错文案是各自的历史措辞，逐字依赖，别统一
+- 缺键抛结构化 MissingKeyError（携带 key 和 source），按 kind 渲染回各调用点的历史文案，逐字依赖，别统一
 """
 
 import json
@@ -11,59 +11,79 @@ import os
 
 
 class MissingKeyError(Exception):
-    """配置缺键。渲染成什么文案由各调用点决定（历史措辞，tests 逐字锁着）。"""
+    """结构化缺键错误：携带 key、source 与 kind，按 kind 渲染回历史文案。
+
+    渲染规则（历史措辞，tests 逐字锁着）：
+    - require:           "missing key: {key}"
+    - require_int:       "required int not found: {key}"
+    - require_section:   "section '{key}' not found"
+    - required_subset:   "key {key!r} missing in {source}"
+    """
+
+    def __init__(self, kind, key, source=None):
+        self.kind = kind
+        self.key = key
+        self.source = source
+        super(MissingKeyError, self).__init__(self._render(kind, key, source))
+
+    @staticmethod
+    def _render(kind, key, source):
+        if kind == "require":
+            return "missing key: %s" % key
+        if kind == "require_int":
+            return "required int not found: %s" % key
+        if kind == "require_section":
+            return "section '%s' not found" % key
+        if kind == "required_subset":
+            return "key %r missing in %s" % (key, source)
+        return str(key)
 
 
-def _merge_inplace(dst, src):
-    """把 src 深合并进 dst，就地改。"""
-    for k, v in src.items():
-        if k in dst and isinstance(dst[k], dict) and isinstance(v, dict):
-            _merge_inplace(dst[k], v)
+class _Layer(object):
+    """管道中的一层：名字 + 该层原始配置树（深拷贝，与入参隔离）。"""
+
+    __slots__ = ("name", "data")
+
+    def __init__(self, name, data):
+        self.name = name
+        self.data = data
+
+
+def _deep_copy(value):
+    """递归深拷贝 dict 树，非 dict 叶子原样保留。"""
+    if not isinstance(value, dict):
+        return value
+    return {k: _deep_copy(v) for k, v in value.items()}
+
+
+def merge_dicts(a, b):
+    """唯一的合并函数：把 b 深合并进 a 的拷贝，返回新 dict，入参不动。
+
+    两边同键且都是 dict 时递归合并；否则右侧覆盖左侧（dict/标量互换亦然）。
+    """
+    out = _deep_copy(a)
+    for k, v in b.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            out[k] = merge_dicts(out[k], v)
         else:
-            dst[k] = v
-
-
-def _copy_tree(d):
-    out = {}
-    for k, v in d.items():
-        if isinstance(v, dict):
-            out[k] = _copy_tree(v)
-        else:
-            out[k] = v
+            out[k] = _deep_copy(v)
     return out
 
 
-def _walk_set(data, path, value):
-    """按 dotted path 写入嵌套 dict，中间层缺就建。"""
-    parts = path.split(".")
-    cur = data
-    for p in parts[:-1]:
-        if p not in cur or not isinstance(cur[p], dict):
-            cur[p] = {}
-        cur = cur[p]
-    cur[parts[-1]] = value
-
-
 class ConfigStack(object):
-    """分层配置栈。层按调用先后叠加，后加的覆盖先加的。"""
+    """显式层管道。层在管道中的声明顺序即优先级：后加的覆盖先加的。"""
 
     def __init__(self):
-        self._data = {}
-        self._layers = []
+        self._pipeline = []
+        self._merged = {}
 
     def add_layer(self, name, data):
         if not isinstance(data, dict):
             raise TypeError(
                 "layer %s: expected dict, got %s" % (name, type(data).__name__)
             )
-        self._layers.append(name)
-        for k, v in data.items():
-            if isinstance(v, dict):
-                v = _copy_tree(v)
-            if k in self._data and isinstance(self._data[k], dict) and isinstance(v, dict):
-                _merge_inplace(self._data[k], v)
-            else:
-                self._data[k] = v
+        self._pipeline.append(_Layer(name, _deep_copy(data)))
+        self._refresh()
 
     def add_file(self, name, path):
         with open(path, "r", encoding="utf-8") as f:
@@ -72,31 +92,39 @@ class ConfigStack(object):
 
     def apply_env(self, prefix):
         sep = prefix + "__"
-        found = {}
+        paths = {}
         for env_name in sorted(os.environ):
             if not env_name.startswith(sep):
                 continue
-            rest = env_name[len(sep):]
-            parts = rest.split("__")
-            skip = False
-            for p in parts:
-                if p == "":
-                    skip = True
-            if skip:
+            parts = env_name[len(sep):].split("__")
+            if any(p == "" for p in parts):
                 continue
-            found[".".join(parts)] = os.environ[env_name]
-        self._layers.append("env")
-        for path in found:
-            _walk_set(self._data, path, found[path])
+            paths[".".join(parts)] = os.environ[env_name]
+        env_data = {}
+        for path, value in paths.items():
+            cur = env_data
+            parts = path.split(".")
+            for p in parts[:-1]:
+                cur = cur.setdefault(p, {})
+            cur[parts[-1]] = value
+        self._pipeline.append(_Layer("env", env_data))
+        self._refresh()
+
+    def _refresh(self):
+        """按管道声明顺序，用唯一合并函数 fold 出当前有效配置树。"""
+        merged = {}
+        for layer in self._pipeline:
+            merged = merge_dicts(merged, layer.data)
+        self._merged = merged
 
     def layers(self):
-        return list(self._layers)
+        return [layer.name for layer in self._pipeline]
 
     def as_dict(self):
-        return _copy_tree(self._data)
+        return _deep_copy(self._merged)
 
     def _lookup(self, key):
-        cur = self._data
+        cur = self._merged
         for part in key.split("."):
             if not isinstance(cur, dict) or part not in cur:
                 return None, False
@@ -112,13 +140,13 @@ class ConfigStack(object):
     def require(self, key):
         v, ok = self._lookup(key)
         if not ok:
-            raise MissingKeyError("missing key: %s" % key)
+            raise MissingKeyError("require", key, self.layers())
         return v
 
     def require_int(self, key):
         v, ok = self._lookup(key)
         if not ok:
-            raise MissingKeyError("required int not found: %s" % key)
+            raise MissingKeyError("require_int", key, self.layers())
         if isinstance(v, bool):
             raise ValueError("not an int: %r" % (v,))
         if isinstance(v, int):
@@ -133,24 +161,13 @@ class ConfigStack(object):
     def require_section(self, name):
         v, ok = self._lookup(name)
         if not ok or not isinstance(v, dict):
-            raise MissingKeyError("section '%s' not found" % name)
+            raise MissingKeyError("require_section", name, self.layers())
         return v
-
-
-def merge_dicts(a, b):
-    """深合并两个 dict，返回新 dict，入参不动。"""
-    out = dict(a)
-    for k, v in b.items():
-        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
-            out[k] = merge_dicts(out[k], v)
-        else:
-            out[k] = v
-    return out
 
 
 def merge_profiles(base, *overrides):
     """依次叠加多个 profile，后面的赢。"""
-    out = base
+    out = _deep_copy(base)
     for ov in overrides:
         out = merge_dicts(out, ov)
     return out
@@ -161,7 +178,7 @@ def required_subset(mapping, keys, source):
     out = {}
     for k in keys:
         if k not in mapping:
-            raise MissingKeyError("key %r missing in %s" % (k, source))
+            raise MissingKeyError("required_subset", k, source)
         out[k] = mapping[k]
     return out
 
