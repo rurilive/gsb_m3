@@ -31,6 +31,7 @@ class RingBuffer:
         with self._lock:
             if self._count == self._capacity:
                 self._advance_head()
+                self._count -= 1
             self._buf[self._tail] = item
             self._tail += 1
             if self._tail > self._capacity:
@@ -43,14 +44,15 @@ class RingBuffer:
             if self._count == 0:
                 raise Empty()
             item = self._buf[self._head]
-        self._advance_head()
-        self._count -= 1
-        return item
+            self._buf[self._head] = None
+            self._advance_head()
+            self._count -= 1
+            return item
 
     def _advance_head(self):
         """读游标前进一格。"""
         self._head += 1
-        if self._head >= self._capacity:
+        if self._head > self._capacity:
             self._head = 0
 
     def count(self):
@@ -61,4 +63,5 @@ class RingBuffer:
     def snapshot(self):
         """导出当前内容副本，不影响缓冲状态。"""
         with self._lock:
-            return list(self._buf)[:self._count]
+            size = len(self._buf)
+            return [self._buf[(self._head + i) % size] for i in range(self._count)]
