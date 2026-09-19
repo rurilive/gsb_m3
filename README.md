@@ -30,3 +30,14 @@
 python3 demo.py                          # 直方图演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- `Histogram(window_seconds=None)` 时行为不变，样本永久保留。
+- 配置窗口后样本带时间戳；`now - ts < window_seconds` 算窗口内，恰满窗口（`==`）保留。
+- 时钟经 `clock=` 注入，默认 `time.monotonic`。
+- 清理是惰性的：`observe/count/percentiles/snapshot` 顺带丢弃过期样本。
+- `observe` 返回本次挤出的样本数（无窗口恒为 0）；`compact()` 显式清理并返回清理数。
+- `count/percentiles/snapshot` 只统计窗口内样本。
+- `snapshot(bucket_edges)` 要求边界严格递增，返回 `n+1` 个桶计数。
+- 桶为 `(-inf,e0),[e0,e1),...,[e_last,+inf)`，值等于边界归右桶（`bisect_right`）。
