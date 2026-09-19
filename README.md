@@ -18,3 +18,10 @@ env 变量名形如 `PREFIX__section__key`（`__` 分隔路径段），值一律
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- 层管道：`_LayerPipeline` 按声明顺序持有 `_Layer(name, data)`（入层即深拷贝），声明顺序即优先级 `defaults < file < env`；`load_config` 在一处显式声明这三层。
+- 唯一合并：`merge_dicts` 是唯一深合并实现，管道 `merged()` 顺序折叠出全量树，`as_dict` 与键查询都走它；旧的四套手写合并已全部删除。
+- env 层：`_parse_env` 把 `PREFIX__a__b` 收成一棵层树（值一律字符串、空路径段跳过），再作为普通层入管道，不再就地改合并树。
+- 缺键错误：`MissingKeyError` 是结构化对象，携带 `key`、`source`（查过的层名元组，供下版配置来源审计）和文案模板；`_render_error` 按各调用点的历史模板渲染，异常类型与文案逐字不变。
