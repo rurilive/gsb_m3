@@ -2,6 +2,8 @@
 
 第一段：一批模拟记录并行校验，坏记录被隔离，不拖垮整批。
 第二段：后台单任务的两种用法（等待 / 回调）。
+第三段：跨线程调用链演示——correlation-id 沿线程传播、span 嵌套
+计时，收尾一次打出带慢标记的树形报告。
 """
 
 import threading
@@ -10,8 +12,11 @@ from tracectx import (
     ItemFailure,
     async_call,
     first_failure,
+    format_tree,
     map_batch,
     run_detached,
+    span,
+    trace_session,
 )
 
 CURRENCIES = {"CNY", "USD", "EUR"}
@@ -68,9 +73,44 @@ def main():
     done.wait(5)
     t.join(5)
 
-    # TODO(调用链追踪): correlation-id 与 span 落地后，把上面这批校验
-    # 串成一条跨线程链路：一条链路一个 id，各段计时、慢段打标记，
-    # 收尾打印树形报告，能看出每条记录卡在哪一段。
+    print("\n=== 跨线程调用链追踪 ===")
+    with trace_session("batch-job", slow_threshold=0.02) as sess:
+        print("  correlation-id:", sess.cid)
+
+        def traced_verify(rec):
+            with span("record:%s" % rec["id"]):
+                if rec["id"] == "r005":  # 模拟一条慢记录，触发慢标记
+                    import time
+                    time.sleep(0.05)
+                return verify(rec)
+
+        traced_results = map_batch(traced_verify, RECORDS, workers=3)
+        traced_ok = [r for r in traced_results if not isinstance(r, ItemFailure)]
+        traced_bad = [r for r in traced_results if isinstance(r, ItemFailure)]
+        print("  工作线程内 record span 全部挂到根下:",
+              len(sess.root.children), "个")
+
+        with span("detached:summary"):
+            run_detached(lambda: "ok=%d bad=%d" % (len(traced_ok), len(traced_bad)))
+
+        ready = threading.Event()
+        picked = {}
+
+        def pick():
+            with span("async:pick"):
+                return max(traced_ok, key=lambda r: r["checksum"])
+
+        def on_picked(v):
+            picked["value"] = v
+            ready.set()
+
+        async_call(pick, on_done=on_picked)
+        ready.wait(5)
+        print("  async_call 选出最大 checksum:", picked["value"]["id"])
+
+    print("  --- span 树（按嵌套层级缩进，慢段打 [slow]） ---")
+    for line in format_tree(sess.root).splitlines():
+        print("  " + line)
 
 
 if __name__ == "__main__":
