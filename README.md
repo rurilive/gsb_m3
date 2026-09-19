@@ -30,3 +30,11 @@
 python3 demo.py                          # 直方图演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 窗口判定：样本时间戳 `ts` 满足 `now - ts > window_seconds` 即过期；恰满窗口的样本仍算窗口内。
+- 清理策略：惰性清理，`observe`/`count`/`percentiles`/`snapshot` 访问时顺手清；`compact()` 显式清理并返回清理数。
+- `observe` 返回本次被挤出的样本数；未配置窗口时恒为 0，行为与旧版一致。
+- 分桶规则：`snapshot(edges)` 要求边界严格递增（否则 `ValueError`），返回 `len(edges)+1` 个计数；桶左闭右开，值等于边界归右桶。
+- 时钟可注入（默认 `time.monotonic`），全部读写仍由同一把锁保护。
