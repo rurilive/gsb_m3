@@ -28,3 +28,11 @@
 python3 demo.py                          # 读写与恢复演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 快照：`begin()` 记下当前全局版本号作为快照版本，`get` 返回快照可见的最新版本（写缓冲优先，read-your-writes）
+- 版本存储：每 key 存 `(提交版本, 值)` 升序列表，删除用墓碑标记；另记每 key 最后提交版本，gc 不清
+- 冲突判定：`commit` 时写集中任一 key 的最后提交版本大于快照版本，即被他人改过，抛 `ConflictError` 并作废事务（first-committer-wins）
+- 版本推进：检测通过后全局版本号加一，写集整体以该新版本生效，并照旧追加 JSON 行日志
+- gc：保留每 key 最新版本及每个活跃事务快照可见的版本，其余回收；无活跃事务时每 key 只剩最新版
