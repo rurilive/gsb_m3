@@ -20,9 +20,30 @@ def main():
     for p in (0.5, 0.9, 0.99):
         print(f"  p{int(p * 100):02d} = {ps[p]}")
 
-    # TODO(窗口改造): 滑动窗口实现后，在这里演示窗口推进：
-    # 用注入时钟模拟时间流逝，展示旧样本被挤出窗口、
-    # count 与分位数随之变化、observe 的返回值、snapshot 分桶。
+    print()
+    print("=== 滑动窗口（window_seconds=30，注入时钟） ===")
+    now = [0.0]
+    w = Histogram(window_seconds=30, clock=lambda: now[0])
+
+    for v in (120, 95, 88):  # 切流前的高延迟
+        w.observe(v)
+    print(f"  t=0s  旧样本 120/95/88: count={w.count()}, "
+          f"p50={w.percentiles(0.5)[0.5]}")
+
+    now[0] = 20
+    for v in (12, 15, 18):  # 切流后的新常态
+        w.observe(v)
+    print(f"  t=20s 新样本 12/15/18:  count={w.count()}, "
+          f"p50={w.percentiles(0.5)[0.5]}（旧样本仍在窗口内）")
+
+    now[0] = 31  # t=0 的样本已 31s，滑出 30s 窗口
+    evicted = w.observe(14)
+    print(f"  t=31s observe(14) 挤出 {evicted} 个旧样本: count={w.count()}, "
+          f"p50={w.percentiles(0.5)[0.5]}")
+    print(f"  t=31s snapshot([20, 50, 100]) = {w.snapshot([20, 50, 100])}")
+
+    now[0] = 51  # t=20 的样本也过期
+    print(f"  t=51s compact() 清理 {w.compact()} 个，count={w.count()}")
 
 
 if __name__ == "__main__":
