@@ -4,6 +4,9 @@
 - poll()：定时器到点（clock() >= deadline）时合成 TIMEOUT 事件，
   走同一张表完成转移；无定时器的状态下是空操作
 - clock 注入（默认 time.monotonic），日志时间戳全部来自它
+
+目标状态可以是静态的（Row.next），也可以由表项的 next_of 解析器
+按 (session, payload) 动态给出；feed/poll 本身不含任何状态分支。
 """
 
 import time
@@ -34,9 +37,12 @@ class Session:
         self._clock = clock if clock is not None else time.monotonic
         self.state = State.CLOSED
         self.suite = None
+        self.key = None
         self.log = []
         self.outbox = []
         self._deadline = None
+        self._staged_key = None
+        self._rekey_origin = None
 
     def feed(self, event, payload=None):
         self.log.append(LogEntry(self._clock(), "recv", event))
@@ -64,9 +70,10 @@ class Session:
         if row is None:
             raise ProtocolError(self.state, event)
         src = self.state
-        self.state = row.next
+        target = row.next if row.next_of is None else row.next_of(self, payload)
+        self.state = target
         self.log.append(LogEntry(
-            self._clock(), "move", f"{src.value}->{row.next.value}"))
+            self._clock(), "move", f"{src.value}->{target.value}"))
         for msg in row.sends:
             self.outbox.append((self._clock(), msg))
             self.log.append(LogEntry(self._clock(), "send", msg))
