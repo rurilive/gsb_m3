@@ -3,9 +3,11 @@
 第一段：strong 套件握手到 FULL 稳态。
 第二段：weak 套件握手到 DEGRADED 稳态。
 第三段：hello 阶段超时回 CLOSED。
+第四段：FULL 上 rekey 三步成功，回到 FULL。
+第五段：rekey 第一步超时回退 FULL，会话仍可用。
 """
 
-from handshake import Ev, Session
+from handshake import REKEY_TIMEOUT, Ev, Session
 
 
 class FakeClock:
@@ -53,10 +55,32 @@ def main():
     clock.advance(3.0)
     s3.poll()
     show("hello 阶段超时 -> CLOSED", s3)
+    clock.advance(1.0)
 
-    # TODO(rekey): rekey 子流程就位后，在这里加两个演示：
-    # 1) 稳态触发 rekey，三步协商成功回到原稳态
-    # 2) rekey 一步超时回退，会话仍然可用
+    s4 = Session(clock=clock)
+    s4.feed(Ev.START)
+    s4.feed(Ev.PEER_HELLO, "strong")
+    s4.feed(Ev.PEER_KEY)
+    s4.feed(Ev.PEER_AUTH_OK)
+    s4.feed(Ev.REKEY)
+    clock.advance(1.0)
+    s4.feed(Ev.PEER_REKEY_ACCEPT)
+    clock.advance(1.0)
+    s4.feed(Ev.PEER_REKEY_DONE)
+    show("rekey 三步成功 -> 回 FULL", s4)
+    clock.advance(1.0)
+
+    s5 = Session(clock=clock)
+    s5.feed(Ev.START)
+    s5.feed(Ev.PEER_HELLO, "strong")
+    s5.feed(Ev.PEER_KEY)
+    s5.feed(Ev.PEER_AUTH_OK)
+    s5.feed(Ev.REKEY)
+    clock.advance(REKEY_TIMEOUT)
+    s5.poll()
+    show("rekey offer 阶段超时 -> 弃新密钥回 FULL", s5)
+    s5.feed(Ev.PEER_CLOSE)
+    print(f"回退后连接仍可用：PEER_CLOSE 后 state={s5.state.value}")
 
 
 if __name__ == "__main__":

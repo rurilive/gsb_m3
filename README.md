@@ -47,3 +47,14 @@ clock() >= deadline 时合成 `TIMEOUT` 事件走同一张表（先记 timeout
 
     python3 demo.py                          # 握手/降级/超时三段演示
     python3 -m unittest discover -s tests -v # 行为基线测试
+
+## 扩展说明（rekey）
+
+任一稳态（FULL/DEGRADED）可喂 `Ev.REKEY` 进独立子流程：发 `c_rekey_offer`，
+收 `PEER_REKEY_ACCEPT` 发 `c_rekey_confirm`，收 `PEER_REKEY_DONE` 完成。
+状态经 `REKEY_OFFER_SENT`、`REKEY_CONFIRM_SENT`，成功回到进入前的稳态。
+每步武装同一只定时器 `REKEY_TIMEOUT=5.0`；任一步到点由 `poll()` 合成
+`TIMEOUT`，弃新密钥回原稳态，连接不断，timeout 照常记日志。
+回原稳态是运行时决定的目标：`Row` 新增可选 `target=(payload, session)->State`，
+给定时覆盖静态 `next`，进入子流程时由表上动作把原稳态记进 `session.rekey_resume`。
+rekey 行为全部来自转移表的守卫/动作，`feed`/`poll` 无任何 rekey 专用分支。
