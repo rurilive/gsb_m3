@@ -26,3 +26,11 @@
 python3 demo.py                          # 手动检查演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 就绪语义
+
+- `healthd/monitor.py` 的 `HealthMonitor` 用 `start()/stop()` 起自检线程，每 `period` 秒跑一轮，间隔在 `[period-jitter, period+jitter]` 抖动，时钟可注入。
+- `register(name, fn, timeout=...)` 可给探针设时限；超时未返回即判该探针失败，不再拖死整轮。
+- 整体状态分三档：全部通过 `ok`；通过数达到门限 k 但未全过 `degraded`；低于 k 为 `down`（首轮前也是 `down`）。
+- `ready()` 只回答「能不能接流量」：最近一轮通过探针数 >= k/n 即为 True（`degraded` 也可 True），与「健不健康」分开。
+- `status()`/`snapshot()`/`ready()` 均线程安全；`on_change(fn)` 在状态翻转时于自检线程回调 `fn(old, new)`，回调抛错不影响后续检查。
