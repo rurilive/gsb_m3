@@ -40,9 +40,30 @@ def main():
     show("新编辑", doc)
     print(f"  新编辑后 can_redo = {stack.can_redo}（原重做分支已丢弃）")
 
-    # TODO(事务与合并): 实现后在这里演示两件事：
-    # 1) begin/rollback：一组编辑整体撤销，文本回到事务前的样子；
-    # 2) coalesce_window_ms：连打一串字母只占一条历史，undo 一步撤掉整段。
+    print("\n=== 事务：一组编辑整体回退 ===")
+    plan = Buffer("plan", "方案A")
+    tx_stack = EditStack()
+    tx_stack.begin()
+    tx_stack.execute(InsertText(plan, 3, "（加缓存"))
+    tx_stack.execute(InsertText(plan, len(plan.text), "，限流）"))
+    show("事务内", plan)
+    tx_stack.rollback()
+    show("rollback", plan)
+    tx_stack.begin()
+    tx_stack.execute(InsertText(plan, 3, "（先灰度）"))
+    tx_stack.commit()
+    show("commit ", plan)
+    tx_stack.undo()
+    show("undo 一步撤整批", plan)
+
+    print("\n=== 合并：连打一串字母只占一条历史 ===")
+    msg = Buffer("msg", "")
+    typing = EditStack(coalesce_window_ms=500)
+    for ch in "hello":
+        typing.execute(InsertText(msg, len(msg.text), ch))
+    show("连打", msg)
+    typing.undo()
+    show("undo 一步", msg)
 
 
 if __name__ == "__main__":

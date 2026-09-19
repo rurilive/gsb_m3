@@ -27,3 +27,14 @@
 python3 demo.py                          # 编辑与撤销/重做演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 事务：`begin()` 后 `execute` 照常执行、仍截断重做分支，但命令进事务暂存区而非主栈
+- `commit()` 把整批包成一条 `_Transaction` 记录压栈，`undo` 一步逆序撤整批；空事务不产生历史
+- `rollback()` 逆序调用各命令的 `undo()` 并丢弃，不进重做分支
+- 嵌套 `begin`、无事务时 `commit`/`rollback`、事务内 `undo`/`redo` 均抛 `RuntimeError`
+- 合并：`coalesce_window_ms > 0` 时，同 key 的 `InsertText` 且新插入起点紧接栈顶已合并
+  文本末尾、距上次 `execute` 不超过窗口毫秒数，就把文本并入栈顶命令而非新开历史
+- 时钟通过 `clock` 参数注入（返回毫秒的单调时钟），默认 `time.monotonic() * 1000`
+- 窗口默认 0 即关闭；`undo`/`redo`/`commit`/`rollback` 会重置计时，合并链不跨这些操作
