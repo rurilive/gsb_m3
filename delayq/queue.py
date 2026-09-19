@@ -1,6 +1,7 @@
 """延时队列：任务按到期时间出队，heapq 实现，供调度侧消费。"""
 import heapq
 import threading
+from itertools import count
 from typing import Any, Callable, Optional
 
 from .clock import Clock, SystemClock
@@ -8,15 +9,14 @@ from .clock import Clock, SystemClock
 
 class _Entry:
 
-    __slots__ = ("due", "task", "key")
+    __slots__ = ("due", "seq", "task", "key")
 
-    def __init__(self, due: float, task: Callable[[], Any], key: Optional[str]):
+    def __init__(self, due: float, seq: int, task: Callable[[], Any],
+                 key: Optional[str]):
         self.due = due
+        self.seq = seq
         self.task = task
         self.key = key
-
-    def __lt__(self, other):
-        return self.due < other.due
 
 
 class DelayedQueue:
@@ -33,6 +33,9 @@ class DelayedQueue:
     def __init__(self, clock: Optional[Clock] = None):
         self._clock = clock if clock is not None else SystemClock()
         self._heap = []
+        self._keys = {}
+        self._stale = 0
+        self._seq = count()
         self._lock = threading.Lock()
 
     def add(self, task: Callable[[], Any], delay: float, key: Optional[str] = None) -> None:
@@ -41,23 +44,54 @@ class DelayedQueue:
             raise ValueError("delay 不能为负")
         with self._lock:
             due = self._clock.monotonic() + delay
-            heapq.heappush(self._heap, (due, delay, _Entry(due, task, key)))
+            seq = next(self._seq)
+            entry = _Entry(due, seq, task, key)
+            if key is not None:
+                old = self._keys.get(key)
+                if old is not None:
+                    self._stale += 1
+                self._keys[key] = entry
+            heapq.heappush(self._heap, (due, seq, entry))
 
     def pop_ready(self) -> Optional[Callable[[], Any]]:
         """弹出一个已到期的任务；没有到期任务时返回 None。"""
         with self._lock:
-            if not self._heap:
-                return None
-            _, _, entry = heapq.heappop(self._heap)
-            return entry.task
+            now = self._clock.monotonic()
+            while self._heap:
+                _, _, entry = heapq.heappop(self._heap)
+                if self._is_stale(entry):
+                    self._stale -= 1
+                    continue
+                if entry.due > now:
+                    heapq.heappush(self._heap, (entry.due, entry.seq, entry))
+                    return None
+                if entry.key is not None:
+                    self._keys.pop(entry.key, None)
+                return entry.task
+            return None
 
     def peek(self) -> Optional[float]:
         """距最近到期任务的等待秒数；队列为空返回 None。"""
         with self._lock:
-            if not self._heap:
+            entry = self._live_top()
+            if entry is None:
                 return None
-            return self._heap[0][0]
+            return max(0.0, entry.due - self._clock.monotonic())
 
     def __len__(self) -> int:
         with self._lock:
-            return len(self._heap)
+            return len(self._heap) - self._stale
+
+    def _live_top(self) -> Optional[_Entry]:
+        """返回堆顶的有效条目，顺带丢弃失效旧条目（调用方需持锁）。"""
+        while self._heap:
+            entry = self._heap[0][2]
+            if not self._is_stale(entry):
+                return entry
+            heapq.heappop(self._heap)
+            self._stale -= 1
+        return None
+
+    def _is_stale(self, entry: _Entry) -> bool:
+        """key 条目已被同 key 的新提交取代时即为失效（调用方需持锁）。"""
+        return entry.key is not None and self._keys.get(entry.key) is not entry
