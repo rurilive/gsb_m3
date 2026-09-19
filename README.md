@@ -21,3 +21,11 @@
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- `retrykit/strategies.py`：策略层，只算等待秒数；`FixedBackoff`/`ExponentialBackoff`/`FullJitterBackoff` 实现统一接口 `next_delay(attempt, delay, max_delay)`。
+- `retrykit/core.py`：唯一的重试循环 `RetryLoop`，集中处理尝试计数、异常筛选、时间预算、`on_retry` 回调和错误文本，不再每策略一份。
+- 时间与睡眠是 `RetryLoop(sleep=..., clock=...)` 的注入依赖，默认 `time.sleep`/`time.monotonic`，单测可直接传假时钟，无需打补丁。
+- `retry()` 签名与行为不变，内部只构造默认 `RetryLoop` 执行；`__init__.py` 仍只导出 `retry`、`RetryError`。
+- 接入自定义曲线：写一个 `next_delay(attempt, delay, max_delay) -> 秒数` 的函数或策略对象，传给 `retry(strategy=...)`；循环、预算、回调全部复用，曲线可有状态。
