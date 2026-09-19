@@ -21,3 +21,10 @@
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- `retrykit/core.py`：唯一的重试执行循环，负责尝试计数、时间预算（统一 `time.monotonic`）、`retry_on` 过滤、`on_retry` 回调和 `RetryError` 文本，不关心等待时长怎么算。
+- `retrykit/strategies.py`：策略对象层，接口只有一个 `wait(attempt)`（attempt 为刚失败的次数，从 1 计），返回本次重试前等待秒数；fixed/expo/jitter 各是一个类，由 `resolve_strategy` 按名字解析。
+- sleep 通过非公开参数 `retry(..., _sleep=...)` 注入，默认 `time.sleep`，单测无需再打补丁。
+- 自定义退避曲线：把 `strategy` 直接传成可调用对象 `fn(attempt) -> 秒数`，`resolve_strategy` 会包成策略对象走同一个循环，核心零改动。
