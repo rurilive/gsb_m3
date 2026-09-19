@@ -5,6 +5,7 @@
 """
 
 from pathmatch.match import match
+from pathmatch.ignore import IgnoreRules, matched
 
 PATTERNS = ["*.py", "src/*.py", "src/*/*.py", "assets/*", "docs/*.md"]
 TREE = [
@@ -30,9 +31,31 @@ def main():
     for p in TREE:
         print(f"  {str(match('src/*.py', p)):<5} {p}")
 
-    # TODO(.gitignore 语义): IgnoreRules 实现后，在这里用一组
-    # .gitignore 规则（含否定、目录限定、嵌套优先）重新过滤这批路径，
-    # 展示每条是 ignored 还是 allowed，以及决定性的那条规则。
+    print("\n=== .gitignore 语义：否定、目录限定、嵌套优先 ===")
+    root_rules = IgnoreRules(
+        """\
+# 生成物与脚本默认不跟踪
+*.log
+*.py
+docs/
+""",
+        base="",
+    )
+    src_rules = IgnoreRules(
+        """\
+# 嵌套规则优先：保留入口文件
+!main.py
+""",
+        base="src",
+    )
+    stack = [root_rules, src_rules]
+    for r in stack:
+        raws = [rule.raw for rule in r.rules]
+        print(f"  规则文件 base='{r.base or '.'}': {raws}")
+    for p in TREE:
+        status, rule = matched(p, False, stack)
+        who = rule.raw if rule else "-"
+        print(f"  {status:<8} {p:<22} 决定规则: {who}")
 
 
 if __name__ == "__main__":
