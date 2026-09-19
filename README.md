@@ -8,8 +8,7 @@
 - `loglite/scanner.py` 可疑条目筛选（临时后缀 / 超大小上限），前缀 `[scanner]`
 - `loglite/checker.py` 重复条目与异常 mtime 核查，前缀 `==> checker:`
 - `loglite/planner.py` 问题编排成处置动作，前缀 `[planner]`
-
-三个功能模块的过程日志目前都是裸 `print`，格式各自为政。
+- `loglite/logging.py` 结构化日志层：级别过滤、线程上下文、可轮转文件 sink
 
 ## 约束
 
@@ -19,6 +18,16 @@
 ## 运行
 
 ```bash
-python3 demo.py                          # 现状演示
-python3 -m unittest discover -s tests -v # 行为基线测试
+python3 demo.py                          # 现状 + 结构化日志演示
+python3 -m unittest discover -s tests -v # 行为基线 + 日志层测试
 ```
+
+## 接入说明
+
+- `get_logger("name")` 取日志器，默认前缀 `[name] `；checker 用自定义前缀 `==> checker: `
+- 默认配置即兼容模式：`plain` 渲染写 stdout，输出与旧 `print` 逐字一致，`redirect_stdout` 照常捕获
+- `set_level("DEBUG"|"INFO"|"WARNING"|"ERROR")` 设全局级别，低于级别的记录不进任何 sink
+- `set_context(run="x")` 的字段经 `threading.local` 自动附到当前线程每条日志，`clear_context()` 清除
+- `add_sink(FileSink(path, max_bytes=1e6, backups=5, render="json"))` 按大小轮转为 `path.1`、`path.2`，超出 backups 的旧文件删除
+- 渲染器可选 `"plain"`（兼容）/`"text"`（带级别与 `[k=v]` 上下文）/`"json"`，`StreamSink`、`CaptureSink` 同理
+- `add_sink` / `remove_sink` / `clear_sinks` 管理 sink，`reset()` 恢复默认（测试隔离用）

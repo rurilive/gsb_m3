@@ -1,10 +1,23 @@
 """巡检工具包现状演示。
 
 第一段：跑一遍 扫描 -> 核查 -> 处置 流水线。
-第二段注释：结构化日志层实现后的演示位子。
+第二段：结构化日志层演示（级别过滤 / 上下文字段 / 文件轮转）。
 """
 
+import os
+import tempfile
+
 from loglite.checker import check
+from loglite.logging import (
+    FileSink,
+    StreamSink,
+    add_sink,
+    clear_sinks,
+    get_logger,
+    reset,
+    set_context,
+    set_level,
+)
 from loglite.manifest import dump, parse
 from loglite.planner import plan, summary
 from loglite.scanner import scan
@@ -38,9 +51,48 @@ def main():
     kept = [e for e in entries if e[0] not in flagged]
     print(f"\n清理后的清单预览:\n{dump(kept)}", end="")
 
-    # TODO(结构化日志): 日志层实现后，在这里补第二段演示：
-    # 三个模块的输出接到日志层后与旧 print 完全一致，
-    # 再演示级别过滤、上下文字段和文件轮转。
+    demo_structured_logging()
+
+
+def demo_structured_logging():
+    """第二段：级别过滤、上下文字段、文件轮转。"""
+    print("\n=== 结构化日志演示 ===")
+    tmpdir = tempfile.mkdtemp(prefix="loglite-demo-")
+    path = os.path.join(tmpdir, "inspect.jsonl")
+    print(f"日志文件目录: {tmpdir}")
+
+    reset()  # 与第一段隔离：恢复默认级别与 sink
+    # 控制台换成带级别/上下文的 text 渲染，文件用 JSON 并按大小轮转
+    clear_sinks()
+    add_sink(
+        StreamSink(render="text"),
+        FileSink(path, max_bytes=400, backups=2, render="json"),
+    )
+    set_level("DEBUG")
+    set_context(run="nightly", host="repo-1")
+    log = get_logger("demo")
+
+    log.debug("级别已放开到 DEBUG：这行能进 sink")
+    log.info("开始演示结构化采集")
+    set_context(stage="inspect")  # 后续记录自动多带一个字段
+    log.warning("发现 1 个待人工复核项")
+
+    set_level("WARNING")
+    log.info("级别收回 WARNING：这行不会出现")
+    log.error("演示一条 ERROR")
+
+    # 多写几条触发按大小轮转：path.1 / path.2 依次后移
+    for idx in range(12):
+        log.warning(f"轮转填充消息 {idx}")
+
+    rotated = sorted(name for name in os.listdir(tmpdir) if name.startswith("inspect"))
+    print(f"轮转后文件: {rotated}")
+    for name in rotated:
+        print(f"  {name}: {os.path.getsize(os.path.join(tmpdir, name))} 字节")
+    with open(path, "r", encoding="utf-8") as f:
+        print(f"当前文件末行示例: {f.readline().rstrip()}")
+
+    reset()  # 恢复默认配置，不影响后续在同进程里的使用
 
 
 if __name__ == "__main__":
