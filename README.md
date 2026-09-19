@@ -35,3 +35,27 @@
 ```bash
 python3 demo.py
 ```
+
+## 测试报告
+
+`python3 -m unittest discover -s tests`：25 个测试方法，17 绿、8 红
+（k 构造用例含 5 组参数子用例，unittest 汇总为 11 failures + 1 error）。红用例均在
+`tests/test_bloom.py` 中以 `_is_red` 命名并在上方注明了 README 期望与实际
+行为。`python3 demo.py` 照常跑通，`bloomx/` 源码与 `demo.py` 未改动。
+
+| 红用例 | 缺陷 | 建议修复方向 |
+| --- | --- | --- |
+| `test_invalid_capacity_noninteger_is_red` | `__init__` 只查 `capacity <= 0`，非整数 capacity（如 1.5）被接受 | 增加正整数校验（`isinstance(capacity, int)` 且 `capacity > 0`），否则 ValueError |
+| `test_num_hashes_formula_is_red` | k 的计算用 `log10(2)` 代替 ln2、`int()` 截断且缺少 `max(1, ...)`，得到 2/4/0 等错误值 | 改为 `max(1, round((m / capacity) * math.log(2)))` |
+| `test_h2_depends_on_every_byte_is_red` | `_mix` 中 h2 的更新式 `((h2 * 31)) & mask` 从未使用当前字节，等长输入的 h2 恒为常数 | 让 h2 的更新依赖字节 b（如异或/相加后再乘质数） |
+| `test_distinct_elements_probe_sequences_differ_is_red` | h2 与字节无关，`b'\x00a'` 与 `b'\x01\x00'` 的 (h1, h2) 完全相同，探测序列逐位重合 | 修复 h2 的字节依赖后该碰撞即消失，必要时再复核 h1 的混合强度 |
+| `test_empty_filter_membership_is_red` | 首次 add 前 `_bits` 是长度 0 的 bytearray，空过滤器上 `in` 抛 IndexError | 构造时即分配完整位数组（或 `__contains__` 在未分配时直接返回 False） |
+| `test_estimated_fp_uses_readme_k_is_red` | 因 k 被算成 2，容量打满时理论误判率约 0.0355（实测约 2.6%~3.5%），而非 README 公式的约 0.0100 | 根因同 k 计算缺陷，按 README 公式修正 k 后估计值即回归目标误判率 |
+| `test_loads_restores_fields_is_red` | `loads` 按 `(magic, num_hashes, num_bits, added)` 接收解包结果，把头中的 m、k 互换 | 改为 `magic, num_bits, num_hashes, added = _HEADER.unpack_from(...)` |
+| `test_loads_membership_equivalent_is_red` | m、k 互换后用错误参数探测，已加入的键 loads 后全部查不到 | 根因同 loads 字段互换，修正解包顺序后往返行为一致 |
+
+绿用例覆盖：非法 fp_rate、m 构造公式、属性只读、元素类型与 UTF-8 编码、
+add/`in` 共用探测函数、double hashing 探测公式、固定输入无假阴性、重复 add
+计数不去重、空过滤器 estimated_fp 为 0、固定输入实测误判率与估计值同量级、
+28 字节头布局（magic + 三个大端 Q）、载荷为位数组原样字节、坏 magic 抛
+ValueError。
