@@ -30,3 +30,10 @@
 python3 demo.py                          # 直方图演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 窗口判定：样本年龄 `now - ts <= window_seconds` 算窗口内，恰满窗口也算；时钟可注入，默认 `time.monotonic`。
+- 清理策略：惰性清理，`observe`/`compact` 移除窗口外样本并返回清理数；`count`/`percentiles`/`snapshot` 只过滤不删除。
+- 分桶规则：`snapshot(bucket_edges)` 要求边界严格递增（否则 `ValueError`），返回 `len(edges)+1` 个计数，值等于边界归右桶（`bisect_right`）。
+- 不配置 `window_seconds` 时不过滤、不清理，行为与旧版完全一致。

@@ -1,7 +1,7 @@
 """直方图现状演示。
 
 第一段：记录一批样本，输出 count 与常用分位数。
-第二段：注释里留了滑动窗口演示的位子。
+第二段：滑动窗口演示，用注入时钟模拟时间流逝。
 """
 
 from metricbox.histogram import Histogram
@@ -20,9 +20,26 @@ def main():
     for p in (0.5, 0.9, 0.99):
         print(f"  p{int(p * 100):02d} = {ps[p]}")
 
-    # TODO(窗口改造): 滑动窗口实现后，在这里演示窗口推进：
-    # 用注入时钟模拟时间流逝，展示旧样本被挤出窗口、
-    # count 与分位数随之变化、observe 的返回值、snapshot 分桶。
+    print()
+    print("=== 滑动窗口（window_seconds=60，注入时钟） ===")
+    now = [0.0]
+    w = Histogram(window_seconds=60, clock=lambda: now[0])
+    for v in LATENCIES:
+        w.observe(v)
+    print(f"  t=0    记录 {len(LATENCIES)} 个样本, count = {w.count()}")
+
+    now[0] += 60
+    print(f"  t=+60s 恰满窗口仍算窗口内: count = {w.count()}")
+
+    now[0] += 1
+    evicted = w.observe(40)
+    print(f"  t=+61s observe(40) 挤出 {evicted} 个旧样本, count = {w.count()}")
+    print(f"         p50 = {w.percentiles(0.5)[0.5]}（不再被旧样本拖住）")
+
+    w.observe(55)
+    w.observe(70)
+    print(f"  snapshot([50, 60]) = {w.snapshot([50, 60])}  # 值等于边界归右桶")
+    print(f"  compact() = {w.compact()}（窗口内样本无需清理）")
 
 
 if __name__ == "__main__":
