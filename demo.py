@@ -1,9 +1,14 @@
-"""巡检工具包现状演示。
+"""巡检工具包演示。
 
-第一段：跑一遍 扫描 -> 核查 -> 处置 流水线。
-第二段注释：结构化日志层实现后的演示位子。
+第一段：跑一遍 扫描 -> 核查 -> 处置 流水线（兼容模式，输出与旧 print 一致）。
+第二段：结构化日志层演示——级别过滤、上下文字段、文件轮转。
 """
 
+import os
+import shutil
+import tempfile
+
+from loglite import log as logmod
 from loglite.checker import check
 from loglite.manifest import dump, parse
 from loglite.planner import plan, summary
@@ -38,9 +43,37 @@ def main():
     kept = [e for e in entries if e[0] not in flagged]
     print(f"\n清理后的清单预览:\n{dump(kept)}", end="")
 
-    # TODO(结构化日志): 日志层实现后，在这里补第二段演示：
-    # 三个模块的输出接到日志层后与旧 print 完全一致，
-    # 再演示级别过滤、上下文字段和文件轮转。
+    # ---- 第二段：结构化日志层 ----
+    print("\n=== 结构化日志层 ===")
+
+    print("\n-- 级别过滤：全局 WARNING，scan 的 INFO 过程日志全部静默 --")
+    logmod.set_level(logmod.WARNING)
+    scan(entries)
+    print("（上面没有任何 scan 输出）")
+    logmod.set_level(logmod.INFO)
+
+    print("\n-- 结构化渲染 + 线程上下文字段 --")
+    logmod.set_compat(False)
+    logmod.set_context(run="demo-1", stage="scan")
+    scan(entries[:2])
+    logmod.clear_context()
+    logmod.set_compat(True)
+
+    print("\n-- 文件 sink 按大小轮转（max_bytes=64, backups=2） --")
+    tmpdir = tempfile.mkdtemp()
+    try:
+        path = os.path.join(tmpdir, "audit.log")
+        logmod.clear_sinks()
+        logmod.add_sink(logmod.RotatingFileSink(path, max_bytes=64, backups=2))
+        logger = logmod.get_logger("demo")
+        for i in range(12):
+            logger.info(f"audit line {i}")
+        for name in sorted(os.listdir(tmpdir)):
+            with open(os.path.join(tmpdir, name), encoding="utf-8") as f:
+                print(f"  {name}: {f.read().splitlines()}")
+    finally:
+        logmod.reset()
+        shutil.rmtree(tmpdir)
 
 
 if __name__ == "__main__":
