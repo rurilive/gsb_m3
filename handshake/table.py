@@ -5,7 +5,8 @@ Session 按书写顺序取第一条全部守卫通过的行执行，没有任何
 视为协议违规，抛 ProtocolError。
 
 Row 字段：
-- next    目标状态
+- next    目标状态；也可以是动态目标函数 (session, payload) -> State，
+          在转移发生时求值（用于「回原稳态」这类取决于上下文的目标）
 - guards  守卫元组，签名 (payload, session) -> bool
 - actions 动作元组，签名 (session, payload)，状态变更后按序执行
 - sends   发出的对端消息名元组，进 outbox 并写日志
@@ -14,7 +15,15 @@ Row 字段：
 
 from collections import namedtuple
 
-from .states import SUITES, Ev, State, T_AUTH, T_HELLO, T_KEY
+from .states import (
+    REKEY_TIMEOUT,
+    SUITES,
+    Ev,
+    State,
+    T_AUTH,
+    T_HELLO,
+    T_KEY,
+)
 
 Row = namedtuple(
     "Row", "state event next guards actions sends timer",
@@ -40,6 +49,18 @@ def store_suite(session, payload):
     session.suite = payload
 
 
+def remember_return(state):
+    """动作工厂：记下 rekey 结束（成功或超时）后要回到的稳态。"""
+    def action(session, payload):
+        session.rekey_return = state
+    return action
+
+
+def back_to_steady(session, payload):
+    """动态目标：回到进入 rekey 子流程前的稳态。"""
+    return session.rekey_return
+
+
 TABLE = [
     # 握手推进
     Row(State.CLOSED, Ev.START, State.HELLO_SENT, sends=("c_hello",),
@@ -63,4 +84,17 @@ TABLE = [
     # 稳态下对端要求关闭
     Row(State.FULL, Ev.PEER_CLOSE, State.CLOSED, sends=("c_close",)),
     Row(State.DEGRADED, Ev.PEER_CLOSE, State.CLOSED, sends=("c_close",)),
+    # rekey 子流程：任一稳态触发，发 rekey-offer，每步武装 REKEY_TIMEOUT
+    Row(State.FULL, Ev.REKEY, State.REKEY_OFFER_SENT,
+        actions=(remember_return(State.FULL),), sends=("rekey-offer",),
+        timer=REKEY_TIMEOUT),
+    Row(State.DEGRADED, Ev.REKEY, State.REKEY_OFFER_SENT,
+        actions=(remember_return(State.DEGRADED),), sends=("rekey-offer",),
+        timer=REKEY_TIMEOUT),
+    Row(State.REKEY_OFFER_SENT, Ev.PEER_REKEY_ACCEPT, State.REKEY_CONFIRM_SENT,
+        sends=("rekey-confirm",), timer=REKEY_TIMEOUT),
+    # 成功或任一步超时：动态目标回到进入前的稳态，连接不断
+    Row(State.REKEY_CONFIRM_SENT, Ev.PEER_REKEY_DONE, back_to_steady),
+    Row(State.REKEY_OFFER_SENT, Ev.TIMEOUT, back_to_steady),
+    Row(State.REKEY_CONFIRM_SENT, Ev.TIMEOUT, back_to_steady),
 ]
