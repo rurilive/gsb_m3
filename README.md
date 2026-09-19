@@ -21,3 +21,10 @@
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- `metrio/registry.py`：`Registry` 实例持有全部状态（计数器、直方图、注册顺序）；`metrio/meters.py` 的模块函数只是默认实例 `REGISTRY` 的薄壳转发。
+- `metrio/snapshot.py`：排序、最近秩分位、sum/avg/min/max 的唯一口径；`Registry.snapshot()` 产出不可变 `Snapshot`，统计可脱离格式化直接单测。
+- `metrio/render.py`：三个导出共用同一份 `Snapshot`，只做格式化（快照 → 渲染），字段序差异只存在于这一层，不再各抄一份统计。
+- 标签维度从 `Registry` 的键接入（name → (name, labels)），快照加 labels 字段，各渲染器自行决定如何拼输出。

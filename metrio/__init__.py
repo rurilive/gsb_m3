@@ -11,6 +11,8 @@ from metrio.meters import (
     render_text,
     reset,
 )
+from metrio.registry import Registry
+from metrio.snapshot import CounterSnapshot, HistogramSnapshot, Snapshot
 
 __all__ = [
     "REGISTRY",
@@ -22,4 +24,8 @@ __all__ = [
     "export_json",
     "export_prom",
     "reset",
+    "Registry",
+    "Snapshot",
+    "CounterSnapshot",
+    "HistogramSnapshot",
 ]
