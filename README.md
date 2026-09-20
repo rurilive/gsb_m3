@@ -32,3 +32,12 @@
 python3 demo.py                          # 按批推送演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 水位存哪：`resumex/resume.py` 的 `WatermarkStore` 把每次确认后的水位追加写到指定文件，一行一条 `{"seq", "crc"}`，保留多个历史点，`history()` 取最近 keep 条
+- 半截判废：加载时只认以换行结尾且 crc32 校验通过的整行，写一半的尾行、校验失败的行一律丢弃
+- 落盘时机：`ResumableRunner` 先 `sink.push()` 拿到下游确认，再把水位落盘，水位只增不减（回退直接报错）
+- 续传：启动先读 `store.latest()`，从水位之后取数，已确认的不重喂
+- 丢弃计数：序号 ≤ 当前水位（含重复与乱序迟到）或已在未确认缓冲中的记录不入队，`dropped` 计数
+- 阻塞计数：未确认缓冲到 `buffer_size` 上限就暂停从来源取数，每暂停一次 `blocked` 加一
