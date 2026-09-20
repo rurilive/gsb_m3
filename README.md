@@ -21,3 +21,10 @@
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- 分三层：`Clock` 只管时钟与 sleep（可用 `use_clock()` 整体注入，默认走标准库）；`Backoff` 策略对象只算第 n 次失败等多久；`retry` 是唯一执行循环，统一负责调用、异常判定、预算、回调。
+- 内置 `FixedBackoff` / `ExponentialBackoff` / `JitterBackoff`，由策略名映射，历史等待序列不变。
+- 接入自定义退避曲线：直接把 `wait(attempt)` 形式的函数传给 `strategy`，或传 `Backoff` 子类实例；`register_strategy(name, cls)` 可登记成命名策略。
+- 因为循环与退避算法彻底解耦，新增曲线只需提供“第几次失败→等几秒”，无需碰执行循环，所以接得住任意自定义曲线。
