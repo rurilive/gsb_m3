@@ -21,3 +21,12 @@
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- 两层职责：`writer.py`（写层，`pack_bytes`/`write_archive` 共用 `iter_blocks`）与 `reader.py`（读层，`unpack_bytes`/`read_archive` 共用流式核心 `_read_entries`）
+- `format.py` 是头部布局唯一事实来源：所有偏移/长度常量（魔数 0、名字 4、长度 68、校验和 76）、`header_checksum`、`build_header`/`parse_header`；加版本字段只改这里
+- `entry.py` 放 `ArchiveEntry` 与写侧校验 `check_entry`
+- 错误路径分类：归档损坏（魔数/校验和/截断）由 `format`/`reader` 抛 `ValueError`，名字非 utf-8 抛 `UnicodeDecodeError`，入参类型错抛 `TypeError`，文件 IO 错误原样传播
+- `find_entry` 在边界统一吞 `ValueError` 返回 `None`；不足一块的尾部字节与结束块之后的字节一律忽略
+- `archive.py` 仅作重新导出的兼容层，`__init__.py` 导出的名字与签名不变
