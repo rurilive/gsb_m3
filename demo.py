@@ -1,12 +1,12 @@
-"""LeaseManager 现状演示。
+"""LeaseManager 演示。
 
 第一段：发放 / 查询 / 归还，以及 TTL 到期后 get 变 None。
-第二段：预留的续期与回收演示位子（见文末注释）。
+第二段：看护对象按周期自动续期、续期失败通知，以及回收过期租约。
 
 全程用假时钟，跑起来不需要真实等待。
 """
 
-from leasekit.lease import LeaseManager
+from leasekit.lease import LeaseManager, LeaseWatchdog
 
 
 class DemoClock:
@@ -47,12 +47,38 @@ def main():
     s = manager.stats()
     print(f"  stats: granted={s['granted']} released={s['released']} live={s['live']}")
 
-    # TODO(续期改造): 续期与回收实现后，在这里加第三段演示：
-    # 让 worker-2 拿一条租约、由一个看护对象按周期自动续期，
-    # 推进时钟跨过若干续期点看 expires_at 往后走；再让续期失败
-    # （比如持有者被换掉），看持有者怎么收到通知；最后把几条
-    # 没人续的租约放凉，跑一次回收，看它们从内存消失、stats 里
-    # reaped 计数上涨。
+    print("=== 看护自动续期 ===")
+    lease_id = manager.acquire("worker-3", ttl=30.0)
+    print(f"  worker-3 拿到长任务租约 {lease_id[:8]}，初始到期 {manager.get(lease_id).expires_at}s")
+
+    def on_lost(lost_id, holder, reason):
+        print(f"  !! {holder} 收到通知：租约 {lost_id[:8]} 续不上了（{reason}），立刻停手")
+
+    watchdog = LeaseWatchdog(manager, lease_id, "worker-3", 10.0, on_lost)
+    for _ in range(3):                          # 主循环每轮 tick，不起线程
+        clock.advance(10.0)
+        watchdog.tick()
+        print(f"  现在 {clock.now}s，租约到期点被推到 {manager.get(lease_id).expires_at}s")
+
+    print("=== 续期失败通知 ===")
+    ghost = manager.acquire("worker-4", ttl=30.0)
+    ghost_wd = LeaseWatchdog(manager, ghost, "worker-4", 25.0,
+                             lambda *a: on_lost(*a))
+    print("  worker-4 停在 GC 边界没再 tick，租约先过期又被回收：")
+    clock.advance(35.0)
+    swept = manager.reap_expired()
+    print(f"  回收顺手清掉 {len(swept)} 条（含 worker-4 和之前没人续的）")
+    ghost_wd.tick()                            # 下一 tick 立刻发现并通知
+
+    print("=== 回收过期租约 ===")
+    manager.acquire("worker-5", ttl=5.0)
+    manager.acquire("worker-6", ttl=5.0)
+    keep = manager.acquire("worker-7", ttl=100.0)
+    clock.advance(10.0)
+    reaped = manager.reap_expired()
+    print(f"  回收了 {len(reaped)} 条过期租约，worker-7 的长租约还在: {manager.get(keep) is not None}")
+    s = manager.stats()
+    print(f"  stats: granted={s['granted']} released={s['released']} reaped={s['reaped']} live={s['live']}")
 
 
 if __name__ == "__main__":

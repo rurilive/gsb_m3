@@ -3,7 +3,12 @@
 一条租约就是「某个持有者在一段时间内独占某个东西」的凭证：
 发放时按 TTL 算好到期时刻，读取时用注入的 clock 判断还活着没有。
 过期的条目在读取路径上视同不存在（get 返回 None），但不会被顺手
-删掉——清理由谁负责、什么时候做，是另一码事。
+删掉——清理由主循环显式驱动 reap_expired 完成。
+
+持有者可以在到期前 renew 把到期点往后延；renew 与回收共用同一把锁，
+在同一次持锁内完成「看死没死 -> 改/删」，不存在刚续上就被回收的窗口。
+长任务配一个 LeaseWatchdog，由外部主循环 tick 驱动，到点自动续，
+续不上立刻回调通知持有者，全程不起真线程。
 
 纯标准库，不碰真实时间：所有时刻都来自构造时传入的 clock，
 测试里给个假时钟就能精确断言到期边界。
@@ -60,6 +65,12 @@ class LeaseManager:
         self._leases = {}       # lease_id -> _Record
         self._granted = 0
         self._released = 0
+        self._reaped = 0
+
+    @property
+    def clock(self):
+        """管理器使用的时钟，看护对象拿它判断何时该续。"""
+        return self._clock
 
     def acquire(self, holder, ttl=None):
         """发放一条新租约，返回 lease_id。
@@ -80,6 +91,27 @@ class LeaseManager:
         with self._lock:
             return self._snapshot(lease_id)
 
+    def renew(self, lease_id, holder, ttl=None):
+        """持有者在到期前把租约往后延，成功返回 True。
+
+        租约不存在、已到期，或来者不是当前持有者，一律返回 False
+        且不改动租约（包括 ttl）。ttl 不传就沿用这条租约当前的租期；
+        显式传 ttl 则以后续期都按新租期算。新的到期点 = 现在 + ttl，
+        不是在旧到期点上累加。
+        """
+        if ttl is not None and ttl <= 0:
+            raise ValueError("ttl must be > 0")
+        with self._lock:
+            record = self._leases.get(lease_id)
+            if record is None or record.holder != holder:
+                return False
+            if self._clock() >= record.expires_at:
+                return False
+            next_ttl = record.ttl if ttl is None else ttl
+            record.ttl = next_ttl
+            record.expires_at = self._clock() + next_ttl
+            return True
+
     def release(self, lease_id, holder):
         """持有者主动归还租约，返回是否真的还上了。
 
@@ -95,6 +127,24 @@ class LeaseManager:
             self._released += 1
             return True
 
+    def reap_expired(self):
+        """清掉所有到期未续的租约，返回被回收的 lease_id 列表。
+
+        由主循环周期性驱动，不自己起线程。回收只认当下的到期点：
+        刚 renew 过的租约 expires_at 已在锁内推后，不会被误清。
+        """
+        with self._lock:
+            now = self._clock()
+            expired = [
+                lease_id
+                for lease_id, record in self._leases.items()
+                if now >= record.expires_at
+            ]
+            for lease_id in expired:
+                del self._leases[lease_id]
+            self._reaped += len(expired)
+            return expired
+
     def stats(self):
         """计数快照，返回独立 dict，调用方随便改。"""
         with self._lock:
@@ -103,6 +153,7 @@ class LeaseManager:
             return {
                 "granted": self._granted,
                 "released": self._released,
+                "reaped": self._reaped,
                 "live": live,
             }
 
@@ -114,3 +165,55 @@ class LeaseManager:
         if self._clock() >= record.expires_at:
             return None
         return Lease(lease_id, record.holder, record.ttl, record.expires_at)
+
+
+class LeaseWatchdog:
+    """盯着一条租约、到点替持有者自动续期的看护对象。
+
+    不起线程：由外部主循环周期性调用 tick(now=None) 驱动。每隔
+    renew_interval 秒调一次 manager.renew；续期失败（租约已过期、
+    被回收，或持有者已经不是自己）只通知一次，随后看护对象停摆。
+
+    on_lost: 续期失败时的回调，签名 on_lost(lease_id, holder, reason)，
+             reason 为 "gone"（租约没了/已过期）或 "wrong_holder"。
+    ttl:     每次续期带上的租期；None 表示沿用租约当前租期。
+    """
+
+    def __init__(self, manager, lease_id, holder, renew_interval,
+                 on_lost, ttl=None):
+        if renew_interval <= 0:
+            raise ValueError("renew_interval must be > 0")
+        self._manager = manager
+        self._lease_id = lease_id
+        self._holder = holder
+        self._interval = renew_interval
+        self._on_lost = on_lost
+        self._ttl = ttl
+        self._next_renew_at = manager.clock() + renew_interval
+        self._lost = False
+
+    @property
+    def lease_id(self):
+        return self._lease_id
+
+    @property
+    def lost(self):
+        """是否已经收到过续期失败通知；失活后 tick 不再动作。"""
+        return self._lost
+
+    def tick(self, now=None):
+        """主循环驱动：到续期点就续一次。返回这次是否发起了续期。"""
+        if self._lost:
+            return False
+        if now is None:
+            now = self._manager.clock()
+        if now < self._next_renew_at:
+            return False
+        self._next_renew_at = now + self._interval
+        if self._manager.renew(self._lease_id, self._holder, self._ttl):
+            return True
+        self._lost = True
+        lease = self._manager.get(self._lease_id)
+        reason = "wrong_holder" if lease is not None else "gone"
+        self._on_lost(self._lease_id, self._holder, reason)
+        return False
