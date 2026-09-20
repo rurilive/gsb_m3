@@ -31,21 +31,29 @@ class Evaluator:
         if kind == "cmp":
             return self._compare(node[1], self._eval(node[2]), self._eval(node[3]))
         if kind == "and":
-            left = self._eval(node[1])
-            right = self._eval(node[2])
-            return bool(left) and bool(right)
+            # 短路：左侧为假时右侧不求值
+            return bool(self._eval(node[1])) and bool(self._eval(node[2]))
         if kind == "or":
-            left = self._eval(node[1])
-            right = self._eval(node[2])
-            return bool(left) or bool(right)
+            # 短路：左侧为真时右侧不求值
+            return bool(self._eval(node[1])) or bool(self._eval(node[2]))
         if kind == "let":
             return self._eval_let(node)
         raise ValueError(f"未知节点: {kind}")
 
     def _eval_let(self, node):
         _, name, value_node, body = node
+        # 绑定只对 body 生效：求值前保存外层同名绑定，退出时恢复，
+        # 避免泄漏到外层作用域或污染后续 evaluate 调用。
+        had_outer = name in self._env
+        outer_value = self._env.get(name)
         self._env[name] = self._eval(value_node)
-        return self._eval(body)
+        try:
+            return self._eval(body)
+        finally:
+            if had_outer:
+                self._env[name] = outer_value
+            else:
+                del self._env[name]
 
     def _binary(self, op, left, right):
         if op == "+":
@@ -57,9 +65,11 @@ class Evaluator:
         if op == "/":
             return left / right
         if op == "//":
-            return int(left / right)
+            # 向下取整（地板除），与 Python 语义一致：-7 // 2 == -4
+            return left // right
         if op == "%":
-            return left - int(left / right) * right
+            # 余数符号跟随除数，与地板除配套：-7 % 2 == 1
+            return left % right
         if op == "^":
             return left ** right
         raise ValueError(f"未知运算符: {op}")
