@@ -1,7 +1,7 @@
-"""DeadLetterQueue 现状演示。
+"""DeadLetterQueue 演示。
 
 第一段：消费失败沉入死信，下游修好后整体重放捞回。
-第二段：预留的分组重放与归档演示位子（见文末注释）。
+第二段：按失败原因分组沉淀、定向重放、保留期与容量归档。
 """
 
 from deadletter.queue import DeadLetterQueue
@@ -17,6 +17,32 @@ class Consumer:
         if msg["id"] in self.broken:
             raise ValueError("downstream rejected %s" % msg["id"])
         print(f"    处理 {msg['id']} payload={msg['payload']}")
+
+
+class TypedConsumer:
+    """按 id 抛指定异常的假消费者，errors 里没有的 id 视为成功。"""
+
+    def __init__(self, errors):
+        self.errors = dict(errors)
+
+    def __call__(self, msg):
+        exc = self.errors.get(msg["id"])
+        if exc is not None:
+            raise exc("downstream rejected %s" % msg["id"])
+        print(f"    处理 {msg['id']} payload={msg['payload']}")
+
+
+class FakeClock:
+    """可手动推进的注入时钟。"""
+
+    def __init__(self, now):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, dt):
+        self.now += dt
 
 
 def main():
@@ -35,10 +61,50 @@ def main():
     recovered = q.retry_dead()
     print(f"  恢复 {recovered} 条，剩余死信 {len(q.dead())} 条")
 
-    # TODO(分类与归档): 分组沉淀、定向重放、TTL 与容量归档落地后，在这里加一段演示：
-    # 让不同 id 以不同异常类型失败，展示按组沉淀的结果；只重放其中一组，
-    # 让该组里没修好的消息退回原组并看到重试计数继续累加；
-    # 再用注入时钟推进时间，演示超保留期的死信被归档、归档按组可查。
+    print("=== 按失败原因分组沉淀 ===")
+    clock = FakeClock(1000.0)
+    typed = TypedConsumer({"m3": ValueError, "m4": ValueError,
+                           "m5": TimeoutError})
+    q2 = DeadLetterQueue(typed, max_retries=1, retention=30.0, capacity=3,
+                         clock=clock)
+    for mid in ("m3", "m4", "m5"):
+        q2.consume({"id": mid, "payload": {"n": mid}})
+    print(f"  当前分组: {q2.groups()}")
+    for rec in q2.dead_group("ValueError"):
+        print(f"  [ValueError] {rec['msg']['id']} payload={rec['msg']['payload']} "
+              f"attempts={rec['attempts']} detail={rec['detail']!r}")
+
+    print("=== 只重放 ValueError 组（m3 已修，m4 仍坏） ===")
+    del typed.errors["m3"]
+    recovered = q2.replay("ValueError")
+    print(f"  恢复 {recovered} 条，TimeoutError 组没被动: "
+          f"{[r['msg']['id'] for r in q2.dead_group('TimeoutError')]}")
+    for rec in q2.dead_group("ValueError"):
+        print(f"  退回原组 {rec['msg']['id']} attempts={rec['attempts']} "
+              f"reason={rec['reason']} dead_at={rec['dead_at']}")
+
+    print("=== 时钟推进，超保留期的死信归档 ===")
+    clock.advance(31.0)   # now=1031.0，死信沉淀于 1000.0，保留期 30
+    print(f"  sweep 归档 {q2.sweep()} 条，剩余死信 {len(q2.dead())} 条")
+    for rec in q2.archived():
+        print(f"  归档[{rec['cause']}] {rec['msg']['id']} "
+              f"reason={rec['reason']} dead_at={rec['dead_at']} "
+              f"archived_at={rec['archived_at']}")
+
+    print("=== 容量超限，最老的挪入归档 ===")
+    clock2 = FakeClock(2000.0)
+    full = TypedConsumer({"x1": ValueError, "x2": ValueError,
+                          "x3": TimeoutError, "x4": TimeoutError})
+    q3 = DeadLetterQueue(full, max_retries=1, capacity=2, clock=clock2)
+    for mid in ("x1", "x2", "x3", "x4"):
+        q3.consume({"id": mid, "payload": mid})
+    clock2.advance(1.0)
+    print(f"  sweep 归档 {q3.sweep()} 条，死信区剩 "
+          f"{[r['msg']['id'] for r in q3.dead()]}")
+    for group in q3.groups() + ["ValueError"]:
+        for rec in q3.archived(group):
+            print(f"  归档[{group}] {rec['msg']['id']} cause={rec['cause']} "
+                  f"archived_at={rec['archived_at']}")
 
 
 if __name__ == "__main__":

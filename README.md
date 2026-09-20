@@ -30,3 +30,11 @@
 python3 demo.py                          # 死信沉淀与整体重放演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 分组键：失败异常的类名，即记录里的 `reason`；`groups()` 列出当前分组，`dead_group(group)` 取某一堆的快照（含 payload 与失败上下文）。
+- 定向重放：`replay(group)` 只重放该组，成功的移出；仍失败的退回原组，`attempts` 累加 1 不清零，`reason`/`dead_at` 保持首次沉淀时的值。
+- 保留期：`sweep()` 用注入时钟判定，`dead_at` 距今达到 `retention` 即归档（`cause="expired"`）。
+- 容量：`sweep()` 在保留期清理之后执行，仍超 `capacity` 就从最老的开始归档（`cause="overflow"`）。
+- 归档可查：归档记录附 `archived_at` 与 `cause`，`archived()` 全量、`archived(group)` 按组，均返回复制后的快照。
