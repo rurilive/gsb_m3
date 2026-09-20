@@ -6,6 +6,8 @@
 本来是为了提交时检测并发冲突。
 """
 
+from copy import deepcopy
+
 
 class ConflictError(RuntimeError):
     """提交时检测到键在事务开始后被其他事务改过。"""
@@ -71,41 +73,62 @@ class Transaction:
         self._store = store
         self._open = True
         self._base = store.snapshot()
+        self._base_versions = dict(store._versions)
         self._writes = {}
         self._deletes = set()
-        self._undo = {}
 
     def get(self, key, default=None):
         """读取一个键，不存在时返回 default。"""
         self._check_open()
+        if key in self._deletes:
+            return default
+        if key in self._writes:
+            return self._writes[key]
         return self._base.get(key, default)
 
     def set(self, key, value):
         """在事务内写入或覆盖一个键。"""
         self._check_open()
-        if key not in self._undo and key in self._base:
-            self._undo[key] = self._base[key]
-        self._writes[key] = value
+        self._writes[key] = deepcopy(value)
         self._deletes.discard(key)
 
     def delete(self, key):
         """在事务内删除一个键。"""
         self._check_open()
-        self._store._data.pop(key, None)
-        self._deletes.add(key)
         self._writes.pop(key, None)
+        if key in self._base:
+            self._deletes.add(key)
+        else:
+            self._deletes.discard(key)
 
     def commit(self):
-        """提交事务，把本事务的结果并回主表。"""
+        """提交事务，把本事务的结果逐键并回主表。
+
+        若本事务要写或要删的键在事务开始后被其他事务改过，
+        则整次提交作废并抛 ConflictError。
+        """
         self._check_open()
-        self._store._data = dict(self._writes)
+        conflicts = [
+            key
+            for key in list(self._writes) + list(self._deletes)
+            if self._store._version(key) != self._base_versions.get(key, 0)
+        ]
+        if conflicts:
+            self._open = False
+            raise ConflictError(conflicts)
+        for key in self._deletes:
+            self._store._data.pop(key, None)
+            self._store._bump(key)
+        for key, value in self._writes.items():
+            self._store._data[key] = deepcopy(value)
+            self._store._bump(key)
         self._open = False
 
     def rollback(self):
-        """回滚事务，把主表还原成事务开始时的样子。"""
+        """回滚事务，丢弃本事务的全部暂存读写，主表不受影响。"""
         self._check_open()
-        for key, old in self._undo.items():
-            self._store._data[key] = old
+        self._writes.clear()
+        self._deletes.clear()
         self._open = False
 
     def _check_open(self):
