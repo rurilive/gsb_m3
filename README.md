@@ -32,3 +32,11 @@
 python3 demo.py                          # 按批推送演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 水位存哪：`resumex/checkpoint.py` 的 `WatermarkLog` 把确认水位追加到行式日志，保留最近 `keep` 个点，超了先写临时文件再 `os.replace` 原子压缩。
+- 半截怎么判废：每行 `版本\t序号\t时间戳\tsha1(序号+时间戳)`，读回只认四段齐全、校验通过的行，半截/损坏尾行直接跳过，水位停在上一处完好值。
+- 先确认后落盘：`StreamRunner` 启动先 `load()` 水位并按水位之后取数；下游 `push` 返回收妥水位后才 `commit()`，且序号只增不减。
+- 丢弃怎么计数：`WatermarkSink` 把 `seq <= watermark` 的重复与乱序记录一律丢弃，条数累计在 `dropped`（见 `stats()`）。
+- 阻塞怎么计数：`buffer_size > 0` 时取数/推送走有界队列，缓冲满即停止取数，阻塞次数记 `progress()["blocked"]`、累计等待时长记 `blocked_for`。
