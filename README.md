@@ -31,3 +31,11 @@
 python3 demo.py                           # 顺序提交演示
 python3 -m unittest discover -s tests -v  # 行为基线测试
 ```
+
+## 实现说明
+
+- `TwoPhaseCoordinator(participants, store, clock=time.monotonic, prepare_timeout=5.0)`：`begin()` 后 `prepare()` 逐个征询，全票赞成才落 `committing` 决议并 `commit()`；反对/抛错/超时落 `aborting` 决议，按相反顺序对已 prepare 者 `rollback()`。
+- 意图与决议经注入的 `TransactionStore` 落盘（`MemoryStore` 测试用，`JsonFileStore` 原子替换文件）；每次征询先落 `asking`、赞成票和每个参与者的裁决送达（`done`）都逐条 fsync。
+- 重启后拿同一 store、同一批参与者调 `recover()`：决议前崩溃的事务只能 abort；已落盘的 commit/abort 结论只重放、永不翻转，prepare 成功却没等到裁决的参与者一定会收到结论。
+- 超时口径：协调者在每次 `prepare()` 前后各读一次注入时钟，读数之差严格大于 `prepare_timeout` 即超时；超时按拒绝处理，但记录的原因是 `timeout`（`abort_reason()`/落盘字段），区别于反对 `veto` 与抛错 `error`。
+- 老参与者只有 `begin()`/`commit()` 即可继续服务单阶段 `Coordinator`，两阶段才需要 `prepare()`/`rollback()`（见 `PrepareParticipant`/`TwoPhaseLedger`）。
