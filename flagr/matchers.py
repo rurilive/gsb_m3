@@ -6,6 +6,8 @@
   数字之间 int/float 互通；比较器的上下文值必须可比较（数字）
 """
 
+import re
+
 _MISSING = object()
 
 
@@ -116,6 +118,27 @@ class Compare(Matcher):
         return f"{self.field} {self.op} {_fmt(self.value)}"
 
 
+class Regex(Matcher):
+    """字段值（字符串）被正则搜索命中（re.search 语义）。
+
+    模式在构造时预编译，求值热点只做一次 search；安全性校验
+    （嵌套量词等）由编译管线在构建前完成。匹配器本身不可变，
+    可被多线程并发求值。
+    """
+
+    def __init__(self, field, source):
+        self.field = field
+        self.source = source
+        self.pattern = re.compile(source)
+
+    def matches(self, ctx):
+        v = ctx.get(self.field, _MISSING)
+        return isinstance(v, str) and self.pattern.search(v) is not None
+
+    def describe(self):
+        return f'{self.field} regex "{self.source}"'
+
+
 class All(Matcher):
     """and 组合器：全部子条件成立。"""
 
@@ -140,3 +163,16 @@ class Any(Matcher):
 
     def describe(self):
         return "or(" + ", ".join(c.describe() for c in self.children) + ")"
+
+
+class Not(Matcher):
+    """not 组合器：单参数取反。"""
+
+    def __init__(self, child):
+        self.child = child
+
+    def matches(self, ctx):
+        return not self.child.matches(ctx)
+
+    def describe(self):
+        return f"not({self.child.describe()})"

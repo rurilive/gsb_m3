@@ -52,3 +52,12 @@
 
     python3 demo.py                          # 编译 + 三种上下文求值演示
     python3 -m unittest discover -s tests -v # 行为基线测试
+
+## 扩展语法（regex / not）
+
+- `字段 regex "模式"`：`re.search` 语义，上下文值非字符串判 miss；
+  模式在编译期预编译，求值只做一次 search
+- 防灾难性回溯：无界量词嵌套作用在含量词的分组上（如 `(a+)+`、
+  `(\d+){2,}`）在编译期直接拒绝，报错带行列位置
+- `not(表达式)`：单参数取反，与 `and`/`or` 同为组合器，可任意嵌套；
+  子条件 miss（如字段缺失）取反后为 hit

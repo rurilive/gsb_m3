@@ -19,6 +19,19 @@ CONTEXTS = [
     ("jp 新用户", {"country": "JP", "plan": "free", "vip": False, "age": 9}),
 ]
 
+# 正则圈人 + 条件取反：公司邮箱域、且非预发环境
+REGEX_RULES = r"""
+flag staff-beta
+when and(email regex "@corp\.example\.com$", not(env eq staging)) -> on
+default off
+"""
+
+REGEX_CONTEXTS = [
+    ("员工邮箱+线上", {"email": "ops@corp.example.com", "env": "prod"}),
+    ("员工邮箱+预发", {"email": "ops@corp.example.com", "env": "staging"}),
+    ("外部邮箱", {"email": "user@gmail.com", "env": "prod"}),
+]
+
 
 def main():
     engine = compile_rules(RULES)
@@ -29,8 +42,13 @@ def main():
             print(decision.explain())
             print(f"  （{label}）\n")
 
-    # TODO(正则规则): regex 匹配器与 not() 组合器就位后，在这里加一条用正则
-    # 圈定邮箱域的规则演示，展示命中与未命中两种解释输出。
+    engine = compile_rules(REGEX_RULES)
+    for flag in engine.flags:
+        print(f"=== {flag} ===")
+        for label, ctx in REGEX_CONTEXTS:
+            decision = engine.evaluate(flag, ctx)
+            print(decision.explain())
+            print(f"  （{label}）\n")
 
 
 if __name__ == "__main__":

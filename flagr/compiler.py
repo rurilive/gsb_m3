@@ -11,22 +11,30 @@ DSL 语法（一行一条语句）：
     when 表达式 -> on|off
     default on|off
 
-    表达式 := and(表达式, 表达式, ...) | or(表达式, 表达式, ...) | 子句
+    表达式 := and(表达式, 表达式, ...) | or(表达式, 表达式, ...)
+            | not(表达式) | 子句
     子句   := 字段 操作符 取值 | 字段 in [取值, 取值, ...]
-    操作符 := eq ne contains gt ge lt le in
+            | 字段 regex "正则模式"
+    操作符 := eq ne contains gt ge lt le in regex
     取值   := 带引号字符串 | 数字 | true | false | 裸词（按字符串处理）
 """
+
+import re
 
 from .engine import FlagEngine, FlagSpec, Rule
 from .errors import RuleCompileError
 from .lexer import tokenize
-from .matchers import All, Any, Compare, Contains, Equals, InSet, NotEquals
+from .matchers import (
+    All, Any, Compare, Contains, Equals, InSet, Not, NotEquals, Regex,
+)
 
 OP_TABLE = {
     "eq": Equals,
     "ne": NotEquals,
     "contains": Contains,
     "in": InSet,
+    # regex 的取值需带行列位置做编译期校验，在 parse_clause 里特判构建
+    "regex": Regex,
     "gt": lambda f, v: Compare("gt", f, v),
     "ge": lambda f, v: Compare("ge", f, v),
     "lt": lambda f, v: Compare("lt", f, v),
@@ -38,7 +46,81 @@ NUMERIC_OPS = ("gt", "ge", "lt", "le")
 COMBINATOR_TABLE = {
     "and": All,
     "or": Any,
+    "not": lambda children: Not(children[0]),
 }
+
+# 组合器元数：(最少参数, 最多参数)，None 表示不限
+COMBINATOR_ARITY = {
+    "and": (2, None),
+    "or": (2, None),
+    "not": (1, 1),
+}
+
+_REPEAT_BRACE_RE = re.compile(r"\{(\d+)(,(\d*))?\}")
+
+
+def check_pattern_safety(pattern, line, col):
+    """拒绝可能灾难性回溯的正则：无界量词（* + {m,}）嵌套作用在
+    本身已含量词的分组上，如 (a+)+、(\\d|x)*。编译期调用，O(模式长)。"""
+    stack = []  # 每个未闭合分组一项：组内（含子组）是否已出现量词
+    prev_group_quantified = False
+    in_class = False
+    i, n = 0, len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            prev_group_quantified = False
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+        elif ch == "(":
+            stack.append(False)
+            if pattern.startswith("?", i + 1):
+                i += 1  # (?: (?= 等组前缀里的 ? 不是量词
+        elif ch == ")":
+            has_quant = stack.pop() if stack else False
+            if stack:
+                stack[-1] = stack[-1] or has_quant
+            prev_group_quantified = has_quant
+            i += 1
+            continue
+        elif ch in "*+?":
+            if prev_group_quantified and ch in "*+":
+                raise RuleCompileError(
+                    f"正则含嵌套量词，可能灾难性回溯：{pattern!r}", line, col)
+            if stack:
+                stack[-1] = True
+        elif ch == "{":
+            m = _REPEAT_BRACE_RE.match(pattern, i)
+            if m is None:
+                pass  # 非法重复写法按字面量处理，交给 re.compile 裁决
+            else:
+                unbounded = m.group(2) is not None and m.group(3) == ""
+                if prev_group_quantified and unbounded:
+                    raise RuleCompileError(
+                        f"正则含嵌套量词，可能灾难性回溯：{pattern!r}",
+                        line, col)
+                if stack:
+                    stack[-1] = True
+                i += m.end() - 1
+        prev_group_quantified = False
+        i += 1
+
+
+def compile_regex_matcher(field, value, line, col):
+    """编译期校验正则取值并构建 Regex 匹配器。"""
+    check_pattern_safety(value, line, col)
+    try:
+        return Regex(field, value)
+    except re.error as exc:
+        raise RuleCompileError(
+            f"非法正则 {value!r}: {exc}", line, col) from exc
 
 
 class _Parser:
@@ -142,6 +224,7 @@ class _Parser:
 
     def parse_combinator(self, kw):
         combinator = COMBINATOR_TABLE[kw.value]
+        min_args, max_args = COMBINATOR_ARITY[kw.value]
         self.expect("LPAREN", f"{kw.value}( 后应有表达式")
         children = [self.parse_expr()]
         while True:
@@ -151,9 +234,12 @@ class _Parser:
             self.next()
             children.append(self.parse_expr())
         self.expect("RPAREN", f"{kw.value}(...) 缺少右括号")
-        if len(children) < 2:
+        if len(children) < min_args:
             raise RuleCompileError(
-                f"{kw.value} 至少需要 2 个参数", kw.line, kw.col)
+                f"{kw.value} 至少需要 {min_args} 个参数", kw.line, kw.col)
+        if max_args is not None and len(children) > max_args:
+            raise RuleCompileError(
+                f"{kw.value} 只接受 {max_args} 个参数", kw.line, kw.col)
         return combinator(children)
 
     def parse_clause(self, field_tok):
@@ -166,6 +252,13 @@ class _Parser:
             return InSet(field_tok.value, values)
         value_tok = self.parse_value_token()
         value = self.token_value(value_tok)
+        if op_tok.value == "regex":
+            if value_tok.kind != "STR":
+                raise RuleCompileError(
+                    f"regex 需要带引号的正则模式，得到 {value_tok.value!r}",
+                    value_tok.line, value_tok.col)
+            return compile_regex_matcher(
+                field_tok.value, value, value_tok.line, value_tok.col)
         if op_tok.value in NUMERIC_OPS and value_tok.kind != "NUM":
             raise RuleCompileError(
                 f"{op_tok.value} 需要数字取值，得到 {value_tok.value!r}",
