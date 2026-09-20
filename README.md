@@ -18,3 +18,20 @@ value 任意。非线程安全。构造时可传 `seed` 复现随机层级。
 ```bash
 python3 demo.py
 ```
+
+## 测试报告
+
+测试位于 `tests/test_skiplist.py`（标准库 unittest，固定 seed，可独立重复运行）：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+共 21 个用例：13 绿、8 红。红用例对应 4 处源码与 README 的出入：
+
+- **`test_max_height_at_thousand_scale`、`test_no_superlinear_scaling`**：`_random_height` 循环条件误写为 `h > _MAX_LEVEL`（应为 `h < _MAX_LEVEL`），所有节点恒为 1 层，违反第 6 条层级分布，查找/插入退化为 O(n)（第 7 条不成立，1e4→1e5 每操作耗时约 10 倍）。修复方向：把循环条件改回 `h < _MAX_LEVEL`。
+- **`test_remove_unlinks_key`、`test_remove_only_oldest_copy`**：`remove` 只记录并摘除 1 层及以上的前驱链接，从不摘除第 0 层，返回 True 且 len 减一，但节点仍挂在底链上——已删键在 find/range_scan 中「冒出来」，违反第 2 条。修复方向：remove 时记录第 0 层前驱并一并摘除（复用 `_preds` 即可）。
+- **`test_duplicate_copies_coexist_in_insertion_order`、`test_len_counts_each_copy_once`**：重复键插入时 `_splice` 因 `pred.key == node.key` 跳过第 0 层链接，副本根本没入链；同时重复分支内 `self._size += 1` 与末尾的 `+= 1` 重复计数，违反第 1、4 条。修复方向：删掉分支内多算的 `+= 1`，并让副本在同键段末尾正常链接（去掉 `_splice` 的同键跳过或改为定位到段尾后链接）。
+- **`test_contains_with_none_value`**：`__contains__` 用 `find(key) is not None` 判断，存入 None 值的键被误判为不存在，违反第 3 条「存在任一副本即命中」。修复方向：`__contains__` 改为直接做存在性判断，不依赖 value 非 None。
+
+对拍用例 `test_random_op_stream_matches_reference`（3000 步固定 seed 随机操作流，对照朴素参考实现）同样因上述缺陷分叉而红，可作为修复后的整体回归。
