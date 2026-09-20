@@ -1,6 +1,6 @@
-"""templet 现状演示：变量、过滤器、for/if 与自动转义。"""
+"""templet 现状演示：变量、过滤器、for/if、自动转义与 include。"""
 
-from templet import Engine
+from templet import Engine, TemplateCycleError
 
 INVOICE = """\
 尊敬的 {{ customer.name }}：
@@ -18,6 +18,24 @@ PAGE = """\
 <h1>{{ title }}</h1>
 <p>{{ user_input }}</p>
 <p>{{ user_input | safe }}</p>
+"""
+
+HEADER = """\
+<header>{{ site_name }} · {{ section }}</header>
+"""
+
+FOOTER = """\
+<footer>(c) {{ site_name }}</footer>
+"""
+
+SKELETON = """\
+{% include "header.html" %}
+<main>{{ body }}</main>
+{% include "footer.html" %}
+"""
+
+LOOPHOLE = """\
+{% include "loophole.html" %}
 """
 
 
@@ -40,8 +58,21 @@ def main():
         "user_input": '<script>alert("xss")</script>',
     }))
 
-    # TODO(下个版本): include 节点落地后，在这里演示页面骨架 include
-    # 公共片段，以及 include 深度超限时 TemplateCycleError 的报错路径。
+    print("=== 页面骨架 include 公共片段 ===")
+    engine.register("header.html", HEADER)
+    engine.register("footer.html", FOOTER)
+    print(engine.render_string(SKELETON, {
+        "site_name": "橘子运营台",
+        "section": "活动页",
+        "body": "本周大促进行中",
+    }))
+
+    print("=== include 深度超限（TemplateCycleError） ===")
+    engine.register("loophole.html", LOOPHOLE)
+    try:
+        engine.render("loophole.html")
+    except TemplateCycleError as exc:
+        print("已拦截循环包含:", exc)
 
 
 if __name__ == "__main__":

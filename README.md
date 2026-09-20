@@ -33,3 +33,12 @@ python3 -m unittest discover -s tests -v # 行为基线测试
 ```
 
 `tests/test_template.py` 是现有行为的锁定基线。
+
+## 扩展说明
+
+- `{% include "name.html" %}` 展开注册表中的命名模板，参数只接受双引号字符串字面量
+- 未注册的名字沿用 `Engine.render` 的 KeyError；其他写法（单引号/裸名/缺参）抛 TemplateSyntaxError
+- include 沿用当前上下文变量，不新建作用域（for 循环变量在被包含模板里可见）
+- 展开产物直接拼接进输出，不再二次转义（片段内部的 `{{ }}` 仍按自身规则转义一次）
+- 嵌套深度由 `Engine(max_include_depth=...)` 控制，默认 10；超限（含直接/间接递归）抛 TemplateCycleError
+- TemplateCycleError 继承 TemplateError，定义在 `templet/errors.py`；行为测试见 `tests/test_include.py`

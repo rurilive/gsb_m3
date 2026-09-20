@@ -1,7 +1,7 @@
 """节点树：每类节点实现 render(out, ctx)，把渲染结果追加进 out 列表。"""
 
 from templet import expr
-from templet.errors import TemplateError, TemplateSyntaxError
+from templet.errors import TemplateError
 
 
 class Node:
@@ -88,3 +88,17 @@ class IfNode(Node):
         branch = self.body if expr.evaluate(self.cond, ctx.resolve) else self.orelse
         for child in branch:
             child.render(out, ctx)
+
+
+class IncludeNode(Node):
+    """{% include "名字" %}：按引擎注册表展开命名模板。
+
+    沿用当前上下文变量（不新建作用域），产物直接拼接、不再二次转义；
+    深度限制与未注册的 KeyError 由 Engine.render_include 负责。
+    """
+
+    def __init__(self, name):
+        self.name = name
+
+    def render(self, out, ctx):
+        out.append(ctx.engine.render_include(self.name, ctx))
