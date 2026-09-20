@@ -29,3 +29,10 @@
 python3 demo.py                          # 选主与续租演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 协商口径：`renew(node, acks)` 只统计在线成员的回执（member -> 到期时刻），凑齐当前多数派才接受，到期时刻取回执中的最小值；`acks=None` 时按全体在线成员 `now + lease_seconds` 计。
+- 成员表增减后 `quorum_size()` 按新配置即时重算，旧规模的回执凑不齐新多数派时续租被拒，且不改写现有租约。
+- 退位时机：节点发现在线成员凑不齐多数派时必须调用 `abdicate()`，清空 leader 与租约，此后不再发写许可。
+- 代数与写许可：`generation()` 在换主和退位时自增；`write_permit(generation)` 只在 leader 在位且在线、租约未过期、多数派齐备、代数等于当前值时放行；分区归来的节点用 `resync(generation)` 对齐代数，旧代数写许可一律被拒。
