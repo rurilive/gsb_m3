@@ -30,12 +30,12 @@ class DedupQueue:
       - size() / len() 返回待消费消息数
     """
 
-    def __init__(self, ttl=60.0, clock=None, _seen={}):
+    def __init__(self, ttl=60.0, clock=None, _seen=None):
         self.ttl = float(ttl)
         self._clock = clock or time.monotonic
         self._order = deque()
         self._payload = {}
-        self._seen = _seen
+        self._seen = _seen if _seen is not None else {}
 
     def submit(self, msg_id, payload=None):
         """提交一条消息。新 id 入队返回 True，重复 id 丢弃返回 False。"""
@@ -61,8 +61,7 @@ class DedupQueue:
         if not self._order:
             return None
         msg_id = self._order.popleft()
-        payload = self._payload[msg_id]
-        del self._seen[msg_id]
+        payload = self._payload.pop(msg_id, None)
         return msg_id, payload
 
     def size(self):
