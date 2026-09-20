@@ -1,6 +1,6 @@
-"""pluginhost 现状演示：注册三个插件，跑两轮 dispatch。"""
+"""pluginhost 演示：注册三个插件跑 dispatch，再演示注销与错误隔离。"""
 
-from pluginhost import PluginHost
+from pluginhost import Plugin, PluginHost
 from pluginhost.plugins import AuditTrail, FooterSigner, KeywordMask
 
 
@@ -31,9 +31,22 @@ def main():
     show(host, "我的密码是 123456")
     print("audit 见过的消息:", audit.seen)
 
-    # TODO(宿主改造): unregister 与错误隔离实现后，在这里补一段演示：
-    # 注销一个插件再 dispatch，展示它不再出现在链上；再注册一个
-    # on_message 会抛错的插件，展示 dispatch 不被打断、错误被记录下来。
+    print("=== 注销 mask：不再遮蔽，链上也看不到它 ===")
+    host.unregister(host.plugin("mask"))
+    show(host, "我的密码是 123456")
+
+    print("=== 错误隔离：抛错的插件被跳过，错误记入 diagnostics ===")
+
+    class Bombshell(Plugin):
+        name = "bomb"
+        priority = 60
+
+        def on_message(self, message):
+            raise RuntimeError("bomb 炸了")
+
+    host.register(Bombshell())
+    show(host, "正常消息")
+    print("diagnostics:", host.diagnostics)
 
 
 if __name__ == "__main__":
