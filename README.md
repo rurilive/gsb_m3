@@ -19,9 +19,8 @@
 - `dispatch(hook, payload)`：开始时对插件列表取快照，依次调用每个
   插件的同名可调用属性；没有该属性的插件跳过；钩子返回 None 透传
   当前 payload，返回值作为下一个插件的输入，最终返回值即 dispatch 结果
-- 错误行为（现状）：任何插件钩子抛错，异常直接冲出 dispatch，
-  排在它后面的插件本轮全部不会被调用
-- v1 没有注销接口：插件注册后固定留在调用链上
+- 错误行为：v1 为抛错即中断整轮；现状见文末「扩展说明」
+- 注销：v1 没有注销接口；`unregister` 见文末「扩展说明」
 
 ## 运行
 
@@ -29,3 +28,16 @@
 python3 demo.py                          # 现状演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 扩展说明
+
+- `unregister(plugin)`：按身份摘除插件，幂等（未注册则静默返回），
+  不触发任何回调；重新注册视为全新注册，同 priority 排到队尾
+- 错误隔离：业务钩子抛错只跳过该插件，抛错前的 payload 继续传给
+  下游，dispatch 正常返回
+- 每次错误追加一条 `Diagnostic`（插件名、钩子名、原异常）到
+  `host.diagnostics`，按发生顺序
+- 每个错误触发 error 生命周期：按调用顺序对所有在册插件调
+  `on_error(diag)`；`on_error` 再抛错只记 diagnostics，不二次触发
+- dispatch 与 error 事件都按开始时的快照遍历：本轮的注册/注销
+  下一轮才生效，回调中增删插件安全

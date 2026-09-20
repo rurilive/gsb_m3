@@ -2,7 +2,7 @@
 
 宿主按 priority 升序调用插件的同名钩子，priority 相同时按注册先后。
 钩子分两类：业务钩子经 dispatch(hook, payload) 调用，返回值沿插件链
-传递；生命周期回调由宿主在固定时机直接触发。
+传递；生命周期回调（on_registered / on_error）由宿主在固定时机直接触发。
 """
 
 
@@ -19,6 +19,13 @@ class Plugin:
 
     def on_registered(self, host):
         """注册完成后的生命周期回调，可以在这里保存 host 引用。"""
+
+    def on_error(self, diag):
+        """错误生命周期回调：任一插件钩子抛错后按调用顺序触发。
+
+        diag 是 Diagnostic（插件名、钩子名、原异常）。这里再抛错
+        只会被记入 host.diagnostics，不会再次触发本回调。
+        """
 
     def on_message(self, message):
         """业务钩子示例：返回替换后的消息，返回 None 表示透传原消息。"""
