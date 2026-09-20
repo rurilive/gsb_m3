@@ -3,6 +3,7 @@
 每个触发器只需要回答一个问题：给定一个时刻，严格晚于它的第一个触发时刻是哪个。
 """
 
+import math
 import time
 
 
@@ -12,6 +13,22 @@ class Trigger:
     def next_after(self, t):
         """返回严格晚于 t 的第一个触发时刻。"""
         raise NotImplementedError
+
+    def catch_up(self, scheduled, now):
+        """scheduled 是已经到点的计划时刻（scheduled <= now）。
+
+        返回 (严格晚于 now 的下一个计划时刻, [scheduled, now] 区间内的计划点个数)。
+        下一次计划时刻一律从 scheduled 沿网格往前推，与 now 无关，任务跑多久
+        都不会带偏节奏。默认逐点往后数，子类有解析算法时可以覆盖。
+        """
+        count = 1
+        cur = scheduled
+        while True:
+            nxt = self.next_after(cur)
+            if nxt > now:
+                return nxt, count
+            count += 1
+            cur = nxt
 
 
 class IntervalTrigger(Trigger):
@@ -25,6 +42,12 @@ class IntervalTrigger(Trigger):
 
     def next_after(self, t):
         return t + self.seconds
+
+    def catch_up(self, scheduled, now):
+        # 等距网格可以直接算，不必逐点迭代；加一点点 epsilon 抵消浮点误差，
+        # 保证正好压在网格点上的 now 也算作到点。
+        n = int(math.floor((now - scheduled) / self.seconds + 1e-9)) + 1
+        return scheduled + n * self.seconds, n
 
     def __repr__(self):
         return f"IntervalTrigger({self.seconds:g}s)"
