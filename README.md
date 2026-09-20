@@ -32,3 +32,11 @@
 python3 demo.py                          # 限流现状演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 额度记账：共享存储按 (key, 窗口起点) 记租约，`acquire` 原子预领、`release` 归还；`InMemoryLeaseStore` 供测试，生产换 Redis+Lua 实现同一接口。
+- 预领粒度：`batch` 参数（默认 `limit//10`），本地花完再领，远程往返从每请求一次降为每批一次。
+- 回收：租约带 `lease_ttl`（默认 `max(5s, 2*window)`），实例掉线由存储侧到期回收；`close()` 或跨窗口时主动归还没用完的。
+- 窗口对齐：窗口起点以存储时钟为准，本地时钟只按最近一次测得的偏移推算边界，实例间差几秒不影响对齐。
+- 降级口径：存储故障时按 key 走 `failure_policy`/`key_policies`，`open` 放行、`closed` 拒绝，默认 `closed`。
