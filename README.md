@@ -31,3 +31,13 @@
 python3 demo.py                           # 顺序提交演示
 python3 -m unittest discover -s tests -v  # 行为基线测试
 ```
+
+## 实现说明
+
+- 两阶段在 `coordx/twophase.py`：`TwoPhaseCoordinator(participants, store, clock, timeout)`，老 `Coordinator` 与 `tests/test_coordinator.py` 一行未动。
+- 阶段一 `begin()` 后逐个 `prepare()`，全 yes 才在阶段二依次 `commit()`；反对、抛错或超时即 abort，对已征询者逆序 `rollback()`。
+- 参与者需另有 `prepare()`/`rollback()`；只有 `begin()/commit()` 的老参与者不被强改，继续走老 `Coordinator`。
+- `store` 注入（`MemoryStore` / 每行 JSON 且 fsync 的 `FileStore`），append 记录 begin、vote、decision、delivered、done。
+- 决议先落盘再投递；重启后拿同一 store、同名同序参与者调 `recover()` 推完，已落盘结论永不翻，已投递者不重复投递。
+- prepare 全过却无 decision 记录的，恢复按 abort 推：不确定就作废，在途参与者一定收到 rollback。
+- 超时只认注入时钟：每个 prepare 前后各读一次时钟，差值 ≥ timeout 判超时；超时即拒绝，但原因记 `timeout`，区别于 `no` 与 `error`。
