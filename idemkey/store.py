@@ -52,15 +52,18 @@ class IdempotencyStore:
 
         返回 True 表示该由本次请求处理；返回 False 表示这个键已经处理过，
         调用方应当改用 get(key) 取回上次的结果。
+
+        键被占上但一直没收尾（上次处理中途失败）时，视为可以重试，返回
+        True 让本次请求接手。
         """
         key = self._normalize(key)
         now = self._clock()
         with self._lock:
             self._purge(now)
             record = self._records.get(key)
-            if record is not None:
+            if record is not None and record.finished_at is not None:
                 return False
-            # 先把键占上，免得同一个键并发送进来跑两遍
+            # 把键占上；上一次占键没收尾的，这里由本次请求重新占上
             self._records[key] = _Record(None, now, None)
             self._save()
             return True
@@ -76,6 +79,7 @@ class IdempotencyStore:
             else:
                 record.result = result
                 record.finished_at = now
+            self._save()
             return result
 
     def get(self, key):
@@ -92,20 +96,36 @@ class IdempotencyStore:
     # -- 内部实现 --
 
     def _normalize(self, key):
-        """键的规范化：去掉首尾空白，字母统一小写。"""
-        return key.strip().lower()
+        """键的规范化：只去掉首尾空白。
+
+        大小写不同的键是不同的键，不能归并，否则只差大小写的两个单号
+        会被当成同一笔。
+        """
+        return key.strip()
 
     def _purge(self, now):
-        """清掉已经过期的记录。"""
+        """清掉已经过期的记录。
+
+        已收尾的记录从收尾时刻起算 ttl；没收尾的从占键时刻起算。
+        """
         if self._ttl is None:
             return
         expired = [
             key
             for key, record in self._records.items()
-            if now - record.created_at >= self._ttl
+            if now - self._expiry_base(record) >= self._ttl
         ]
         for key in expired:
             del self._records[key]
+        if expired:
+            self._save()
+
+    @staticmethod
+    def _expiry_base(record):
+        """过期起算时刻：收过尾的按收尾时刻，否则按占键时刻。"""
+        if record.finished_at is not None:
+            return record.finished_at
+        return record.created_at
 
     def _load(self):
         """从磁盘读回上次的记录。"""

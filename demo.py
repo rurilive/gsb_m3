@@ -1,10 +1,10 @@
-"""idemkey 现状演示：幂等键没兜住重复扣款的几类现象。
+"""idemkey 演示：幂等键兜住重复扣款的几类场景。
 
-逐段演示四个现象：
-  1. 只差大小写的两个单号被当成同一笔，后一笔拿回前一单的回执
-  2. 服务重启后键还在、结果没了，重发被判成重复
-  3. 处理中途失败，键从此卡死，永远回一份空结果
-  4. 耗时请求刚写完结果，还没到有效期就被清掉
+逐段演示四类历史问题现在的行为：
+  1. 只差大小写的两个单号是两笔不同的单，各走各的处理
+  2. 服务重启后键和结果都在，重发直接回放上次的回执
+  3. 处理中途失败，键可以重新开工，不会卡死
+  4. 耗时请求的结果从收工时刻起算有效期，不会刚写完就被清掉
 """
 
 import os
@@ -27,19 +27,23 @@ class FakeClock:
 
 
 def demo_case_collision():
-    print("=== 1. 大小写不同的两个单号被并成一笔 ===")
+    print("=== 1. 只差大小写的两个单号是两笔不同的单 ===")
     store = IdempotencyStore()
-    print("  begin('Order-7001') ->", store.begin("Order-7001"))
+    assert store.begin("Order-7001") is True
     store.finish("Order-7001", {"order": "Order-7001", "amount": 100})
     print("  Order-7001 收工，收款 100")
-    print("  begin('order-7001') ->", store.begin("order-7001"),
-          "（这是一笔新单，本该开工）")
-    print("  get('order-7001')   ->", store.get("order-7001"),
-          "（拿回的是另一笔单子的回执）")
+    assert store.begin("order-7001") is True
+    print("  begin('order-7001') -> True（新单正常开工）")
+    assert store.get("order-7001") is None
+    print("  get('order-7001')   -> None（不会拿回别人单子的回执）")
+    store.finish("order-7001", {"order": "order-7001", "amount": 200})
+    assert store.get("Order-7001") == {"order": "Order-7001", "amount": 100}
+    assert store.get("order-7001") == {"order": "order-7001", "amount": 200}
+    print("  两笔单各自记账，互不串扰")
 
 
-def demo_restart_loses_results():
-    print("\n=== 2. 服务重启后键还在、结果没了 ===")
+def demo_restart_keeps_results():
+    print("\n=== 2. 服务重启后键和结果都在 ===")
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "idem.json")
         before = IdempotencyStore(path=path)
@@ -47,13 +51,14 @@ def demo_restart_loses_results():
         before.finish("pay-88", {"amount": 250, "state": "paid"})
         print("  重启前 get('pay-88')  ->", before.get("pay-88"))
         after = IdempotencyStore(path=path)
-        print("  重启后 get('pay-88')  ->", after.get("pay-88"), "（结果丢了）")
-        print("  重启后 begin('pay-88')->", after.begin("pay-88"),
-              "（键还在，重发被判成重复）")
+        assert after.get("pay-88") == {"amount": 250, "state": "paid"}
+        print("  重启后 get('pay-88')  ->", after.get("pay-88"), "（结果还在）")
+        assert after.begin("pay-88") is False
+        print("  重启后 begin('pay-88')-> False（重发直接回放，不会重复扣款）")
 
 
 def demo_halfway_failure():
-    print("\n=== 3. 处理中途失败，键被卡死 ===")
+    print("\n=== 3. 处理中途失败，键可以重新开工 ===")
     store = IdempotencyStore()
     attempts = {"n": 0}
 
@@ -74,28 +79,38 @@ def demo_halfway_failure():
         submit("pay-99")
     except RuntimeError as exc:
         print("  第一次提交失败:", exc)
-    print("  同一笔重发拿回:", submit("pay-99"),
-          "（被判成已处理，回一份空结果，再也发不出去）")
+    retried = submit("pay-99")
+    assert retried == {"order": "pay-99", "state": "paid"}
+    print("  同一笔重发:", retried, "（重新开工，正常扣款）")
+    assert submit("pay-99") == retried
+    print("  再重发:", submit("pay-99"), "（已处理，回放同一份回执）")
 
 
-def demo_expiry_from_begin():
-    print("\n=== 4. 耗时请求的结果还没焐热就被清掉 ===")
+def demo_expiry_from_finish():
+    print("\n=== 4. 有效期从收工时刻起算 ===")
     clock = FakeClock()
     store = IdempotencyStore(ttl=60, clock=clock)
     store.begin("pay-77")
     clock.advance(90)                 # 这单前后跑了 90 秒
     store.finish("pay-77", {"amount": 300})
     print("  ttl=60，这单从开工到收工花了 90 秒")
+    assert store.get("pay-77") == {"amount": 300}
     print("  finish 之后马上 get('pay-77') ->", store.get("pay-77"),
-          "（记录按开工时刻算，早被清掉了）")
+          "（按收工时刻起算，记录还在）")
+    clock.advance(59)
+    assert store.get("pay-77") == {"amount": 300}
+    print("  收工后 59 秒 get('pay-77')    ->", store.get("pay-77"))
+    clock.advance(2)                  # 收工后 61 秒，过了有效期
+    assert store.get("pay-77") is None
+    print("  收工后 61 秒 get('pay-77')    -> None（过了有效期才清掉）")
 
 
 def main():
     demo_case_collision()
-    demo_restart_loses_results()
+    demo_restart_keeps_results()
     demo_halfway_failure()
-    demo_expiry_from_begin()
-    print("\n演示结束")
+    demo_expiry_from_finish()
+    print("\n演示结束：四类场景行为均符合预期")
 
 
 if __name__ == "__main__":
