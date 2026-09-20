@@ -1,9 +1,13 @@
-"""巡检工具包现状演示。
+"""巡检工具包演示。
 
 第一段：跑一遍 扫描 -> 核查 -> 处置 流水线。
-第二段注释：结构化日志层实现后的演示位子。
+第二段：结构化日志层（兼容模式 / 结构化模式 / 级别过滤 / 文件轮转）。
 """
 
+import os
+import tempfile
+
+from loglite import log
 from loglite.checker import check
 from loglite.manifest import dump, parse
 from loglite.planner import plan, summary
@@ -38,10 +42,39 @@ def main():
     kept = [e for e in entries if e[0] not in flagged]
     print(f"\n清理后的清单预览:\n{dump(kept)}", end="")
 
-    # TODO(结构化日志): 日志层实现后，在这里补第二段演示：
-    # 三个模块的输出接到日志层后与旧 print 完全一致，
-    # 再演示级别过滤、上下文字段和文件轮转。
+
+def demo_logging():
+    print("\n=== 结构化日志层 ===")
+
+    # 第一段即兼容模式：三模块输出与旧 print 逐字一致，这里不再重复。
+
+    # 结构化模式：带级别、logger 名与线程上下文字段
+    log.set_structured(True)
+    log.set_context(stage="scan", run="demo")
+    print("-- 结构化模式 + 上下文字段 --")
+    scan(parse(MANIFEST))
+    log.clear_context()
+
+    # 级别过滤：WARNING 下 INFO 不进 sink
+    log.set_level("WARNING")
+    print("-- 级别 WARNING：scan 的 INFO 被过滤（无日志行） --")
+    scan(parse(MANIFEST))
+    log.set_level("INFO")
+
+    # 文件 sink 按大小轮转
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "loglite.log")
+        log.add_sink(log.RotatingFileSink(path, max_bytes=200, backups=2))
+        print("-- 文件轮转（max_bytes=200, backups=2），stdout 与文件双写 --")
+        for _ in range(3):
+            scan(parse(MANIFEST))
+        log.reset_sinks()
+        print(f"轮转产物: {sorted(os.listdir(d))}")
+
+    log.set_structured(False)
+    print("（已恢复兼容模式与默认 stdout sink）")
 
 
 if __name__ == "__main__":
     main()
+    demo_logging()
