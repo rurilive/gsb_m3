@@ -21,3 +21,11 @@
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- 分两层：`writer.py` 负责条目→字节（`pack_bytes`/`write_archive` 共用一套头块拼装），`reader.py` 负责字节→条目（`unpack_bytes`/`read_archive` 共用 `_parse_header`，各自只做取块取数的驱动）
+- 头部字段与偏移（0/4/68/76/80、块长、结束块）及校验和算法只收在 `format.py` 一份常量里；`entry.py` 放 `ArchiveEntry` 与入包校验
+- 错误归类：输入类型错误抛 `TypeError`（"expected bytes" 等），头部魔数/校验和/截断抛 `ValueError`，文案集中在 `reader.py` 的构造函数里逐字锁定；坏 utf-8 维持原生 `UnicodeDecodeError`
+- `find_entry` 不抛归档损坏错误，捕获 `ValueError` 返回 `None`；`FileNotFoundError` 由文件驱动原样上抛
+- 不足一块的尾部字节、结束块之后的字节一律忽略（读层两个驱动同口径）
