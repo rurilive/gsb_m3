@@ -1,12 +1,12 @@
 """线程池现状演示。
 
 第一段：submit / map / Task 句柄的基本用法。
-第二段注释：优雅关闭实现后的演示位子。
+第二段：优雅关闭 close() 的行为演示。
 """
 
 import time
 
-from workerpool import WorkerPool
+from workerpool import PoolClosed, WorkerPool
 
 
 def fetch(item):
@@ -35,10 +35,21 @@ def main():
     good = pool.submit(fetch, 7)
     print(f"  next task on same pool: {good.result(5)}")
 
-    # TODO(优雅关闭): close() 实现后，在这里补第二段演示：
-    # 提交几个耗时任务再 close(grace_timeout=...)，打印关闭报告里
-    # 完成与被取消的任务；顺带验证重复 close 幂等、
-    # 关闭后 submit 抛 PoolClosed。
+    print("\n=== 优雅关闭 close(grace_timeout=...) ===")
+    slow = [pool.submit(fetch, 100 + i) for i in range(4)]
+    # 池子 3 个槽位、每个任务约 0.05s：时限 0.08s 内前三个落定，
+    # 第四个来不及，被标记 cancelled
+    report = pool.close(grace_timeout=0.08)
+    print(f"  completed={report.completed}")
+    for t in report.cancelled:
+        print(f"  cancelled: {t!r}")
+    again = pool.close()
+    print(f"  重复 close 幂等: {again is report}")
+    try:
+        pool.submit(fetch, 999)
+    except PoolClosed as exc:
+        print(f"  关闭后 submit: {type(exc).__name__}: {exc}")
+    print(f"  atexit_registered={pool.atexit_registered}")
 
     print("\ndone.")
 
