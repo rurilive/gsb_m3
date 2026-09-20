@@ -34,17 +34,27 @@ class TtlCache:
     def put(self, key, value, ttl=None):
         """写入单个条目。ttl 为秒数，None 表示永不过期。"""
         with self._lock:
-            expires_at = self._expiry(ttl)
-            old = self._entries.get(key)
-            if old is not None:
-                expires_at = old[1]
-            self._entries[key] = (value, expires_at)
+            # 覆盖写入也按新的 ttl 重算到期时刻，不沿用旧值
+            self._entries[key] = (value, self._expiry(ttl))
 
     def put_many(self, items, ttl=None):
-        """批量写入，items 是 (key, value) 的可迭代对象。"""
+        """批量写入，items 是 (key, value) 的可迭代对象。
+
+        同批条目的到期时刻均匀打散在 TTL 窗口的后半段
+        （实际存活期落在 (ttl/2, ttl] 内），避免同一秒集体过期。
+        """
+        items = list(items)
         with self._lock:
-            expires_at = self._expiry(ttl)
-            for key, value in items:
+            if ttl is None:
+                expiries = [None] * len(items)
+            else:
+                now = self._clock()
+                count = len(items)
+                expiries = [
+                    now + ttl - ttl * i / (2 * count) if count else None
+                    for i in range(count)
+                ]
+            for (key, value), expires_at in zip(items, expiries):
                 self._entries[key] = (value, expires_at)
 
     def get(self, key):
@@ -67,22 +77,30 @@ class TtlCache:
         """读缓存，未命中就回源并回填。
 
         loader 接收 key，返回要缓存的结果。回源发生次数记在 loads 里。
+        loader 抛出的异常原样抛给调用方，失败结果不会写进缓存。
         """
         value = self.get(key)
         if value is not None:
             return value
         with self._lock:
             self._loads += 1
-        try:
-            loaded = loader(key)
-        except Exception:
-            loaded = {}
+        loaded = loader(key)
         self.put(key, loaded, ttl)
         return loaded
 
     def sweep(self):
         """主动清理过期条目，返回清掉的数量。"""
-        return 0
+        with self._lock:
+            now = self._clock()
+            stale = [
+                key
+                for key, (_, expires_at) in self._entries.items()
+                if expires_at is not None and now >= expires_at
+            ]
+            for key in stale:
+                del self._entries[key]
+            self._expired += len(stale)
+            return len(stale)
 
     def expires_at(self, key):
         """返回条目的绝对到期时刻，永不过期或 key 不存在时返回 None。"""
