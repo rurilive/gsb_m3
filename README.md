@@ -21,3 +21,11 @@
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- 两层分层：`strategies.py` 只算等待秒数（`wait_for(attempt) -> 秒`），`core.py` 的 `RetryExecutor.run` 是唯一重试循环，负责异常判定、预算、回调、睡眠。
+- 内置 `FixedBackoff` / `ExponentialBackoff` / `JitteredBackoff` 与循环解耦，三个策略同一条循环，历史分叉已消除。
+- 时间统一用单调时钟 `time.monotonic`（原 fixed 误用 `time.time`）；`sleep` 与时钟由 `RetryExecutor` 构造参数注入，默认行为仍是 `time.sleep` / `time.monotonic`，单测可免打补丁。
+- 自定义退避曲线：`strategy=` 直接传 `fn(attempt) -> 等待秒数` 的函数，`CallableBackoff` 适配成同一接口，循环零改动即可接入。
+- 对外仍是 `retry()` 与 `RetryError`，签名、错误文本、等待序列与回调时序保持不变（见 `tests/test_backoff.py`）。
