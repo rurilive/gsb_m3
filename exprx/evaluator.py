@@ -3,6 +3,8 @@
 from .lexer import tokenize
 from .parser import Parser
 
+_MISSING = object()
+
 
 class Evaluator:
 
@@ -32,20 +34,29 @@ class Evaluator:
             return self._compare(node[1], self._eval(node[2]), self._eval(node[3]))
         if kind == "and":
             left = self._eval(node[1])
-            right = self._eval(node[2])
-            return bool(left) and bool(right)
+            if not left:
+                return False
+            return bool(self._eval(node[2]))
         if kind == "or":
             left = self._eval(node[1])
-            right = self._eval(node[2])
-            return bool(left) or bool(right)
+            if left:
+                return True
+            return bool(self._eval(node[2]))
         if kind == "let":
             return self._eval_let(node)
         raise ValueError(f"未知节点: {kind}")
 
     def _eval_let(self, node):
         _, name, value_node, body = node
+        previous = self._env.get(name, _MISSING)
         self._env[name] = self._eval(value_node)
-        return self._eval(body)
+        try:
+            return self._eval(body)
+        finally:
+            if previous is _MISSING:
+                del self._env[name]
+            else:
+                self._env[name] = previous
 
     def _binary(self, op, left, right):
         if op == "+":
@@ -57,9 +68,9 @@ class Evaluator:
         if op == "/":
             return left / right
         if op == "//":
-            return int(left / right)
+            return left // right
         if op == "%":
-            return left - int(left / right) * right
+            return left % right
         if op == "^":
             return left ** right
         raise ValueError(f"未知运算符: {op}")
