@@ -43,10 +43,30 @@ class CallContext:
         self._parent = parent
         self._lock = threading.RLock()
         self._children = []
+        self._cancel_callbacks = []
         self._cancelled = False
-        self._deadline = Deadline(timeout, self._clock) if timeout is not None else None
+        self._deadline = self._make_deadline(timeout, parent)
         if parent is not None:
             parent._register(self)
+
+    def _make_deadline(self, timeout: Optional[float],
+                       parent: Optional["CallContext"]) -> Optional[Deadline]:
+        """构造预算：自身 timeout 与父级剩余预算取更紧的那个。
+
+        不给 timeout 的子上下文继承父级截止时刻，否则父预算无法约束
+        后代调用；给了 timeout 则换算成自身截止时刻，再与父级截止时刻
+        取更早的，防止“父 800ms、子 5s”时子层自顾自跑满。
+        """
+        if parent is None:
+            return Deadline(timeout, self._clock) if timeout is not None else None
+        candidates = []
+        if timeout is not None:
+            candidates.append(Deadline(timeout, self._clock))
+        if parent._deadline is not None:
+            candidates.append(parent._deadline)
+        if not candidates:
+            return None
+        return min(candidates, key=lambda deadline: deadline.remaining())
 
     # -- 预算 -----------------------------------------------------------
 
@@ -77,6 +97,21 @@ class CallContext:
         if already:
             child.cancel()
 
+    def _on_cancel(self, callback: Callable[[], None]) -> None:
+        """注册取消回调；若已取消则立即同步调用。返回是否已取消。"""
+        with self._lock:
+            if self._cancelled:
+                return True
+            self._cancel_callbacks.append(callback)
+            return False
+
+    def _drop_cancel_callback(self, callback: Callable[[], None]) -> None:
+        with self._lock:
+            try:
+                self._cancel_callbacks.remove(callback)
+            except ValueError:
+                pass
+
     def cancel(self) -> None:
         """取消本上下文以及所有派生出来的子上下文。"""
         with self._lock:
@@ -84,8 +119,11 @@ class CallContext:
                 return
             self._cancelled = True
             kids = list(self._children)
+            callbacks = list(self._cancel_callbacks)
         for kid in kids:
             kid.cancel()
+        for callback in callbacks:
+            callback()
 
     def check(self) -> None:
         """协作式取消点：被取消时抛出 Cancelled。
@@ -94,6 +132,14 @@ class CallContext:
         """
         if self._cancelled:
             raise Cancelled("context cancelled")
+        if self._deadline is not None and self._deadline.expired():
+            # 预算耗尽与取消同等处理：终止本层及全部子层的在途工作。
+            self.cancel()
+            raise Timeout("上下文预算已耗尽")
+
+    def _aborted(self) -> bool:
+        """是否已不可再用：显式取消或预算耗尽。"""
+        return self._cancelled or (self._deadline is not None and self._deadline.expired())
 
     # -- 调用 -----------------------------------------------------------
 
@@ -102,13 +148,16 @@ class CallContext:
         return call(fn, timeout=timeout, ctx=self)
 
 
-def _run(fn: Callable[[], Any], job: _Job) -> None:
+def _run(fn: Callable[[], Any], job: _Job, wake: threading.Event, ctx: "CallContext") -> None:
     try:
-        job.value = fn()
+        # 线程已经起来、fn 尚未开跑的窗口里若上下文已作废，就不要再发起调用。
+        if not ctx._aborted():
+            job.value = fn()
     except BaseException as exc:  # noqa: BLE001 - 原样带回调用方
         job.error = exc
     finally:
         job.done.set()
+        wake.set()
 
 
 def call(fn: Callable[[], Any], timeout: Optional[float] = None,
@@ -117,25 +166,52 @@ def call(fn: Callable[[], Any], timeout: Optional[float] = None,
 
     没有 ctx 时按 timeout 新建一个根上下文；上下文与 timeout 都给定时，
     取两者中更紧的那个。
+
+    已取消的上下文会立刻抛 Cancelled，不会再发起新调用；预算耗尽的
+    上下文立刻抛 Timeout。等待期间若上下文被（父级）取消，调用立刻以
+    Cancelled 返回。调用超时时，所在上下文会被一并取消，使同一上下文
+    里的协作式下游步骤及时停手，而不是在后台继续跑。
     """
     if ctx is None:
         ctx = CallContext(timeout=timeout)
     elif timeout is not None:
         ctx = ctx.child(timeout)
 
+    if ctx.cancelled:
+        raise Cancelled("context cancelled")
+    if ctx.expired():
+        ctx.cancel()
+        raise Timeout("调用超出 %s 秒预算" % timeout)
+
     job = _Job()
-    worker = threading.Thread(target=_run, args=(fn, job), daemon=True)
+    wake = threading.Event()
+
+    def _wake() -> None:
+        wake.set()
+
+    if ctx._on_cancel(_wake):
+        raise Cancelled("context cancelled")
+
+    worker = threading.Thread(target=_run, args=(fn, job, wake, ctx), daemon=True)
     worker.start()
 
-    budget = ctx.remaining()
-    if budget == float("inf"):
-        worker.join()
-        finished = True
-    else:
-        finished = job.done.wait(max(0.0, budget))
+    try:
+        while True:
+            if job.done.is_set():
+                break
+            if ctx.cancelled:
+                raise Cancelled("context cancelled")
+            budget = ctx.remaining()
+            if budget != float("inf") and budget <= 0.0:
+                ctx.cancel()
+                raise Timeout("调用超出 %s 秒预算" % timeout)
+            # 完成事件与取消回调都会唤醒 wake：无预算时一直等到二者之一，
+            # 有预算时最多等到预算耗尽，取消仍可即时打断。
+            wake.wait(timeout=None if budget == float("inf") else budget)
+            wake.clear()
 
-    if not finished:
-        raise Timeout("调用超出 %s 秒预算" % timeout)
-    if job.error is not None:
-        raise job.error
-    return job.value
+        if job.error is not None:
+            raise job.error
+        return job.value
+    finally:
+        ctx._drop_cancel_callback(_wake)
