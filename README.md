@@ -22,3 +22,12 @@
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- `constants.py`：唯一常量层，行长上限 8192、CRLF/LF、空格/Tab、`HTTP/` 等字面量都在这里，不再有裸魔法数。
+- `tokenizer.py`（`LineTokenizer`）：字节缓冲上的切分层，只管按行取字节（剥行尾 CR）、行长超限在这层拦截、以及按字节取 body；不碰 HTTP 语义。
+- `message.py`（`RequestAssembler`）：组装层，显式状态机按 `请求行 → 头部 → CL body / chunked（chunk 行→数据→终止符）→ trailer` 推进。
+- `parser.py`：只留对外门面，`ParseError`/`HttpRequest`/`parse_request` 的签名与行为不变，`parse_request` 即“一次 feed 全部 + finish”。
+- 状态推进在 `message._pump()`：每喂一段数据就推到“还差数据”为止，凑不够则挂起返回、不报错，EOF 由 `finish()` 按历史文案收尾。
+- 接得住流式：调用方可多次 `feed(分段字节)`，tokenizer 内部只存缓冲和消费偏移，无全局重扫；歧义前缀（如单独的 `\r`）会等下一段再判定。
