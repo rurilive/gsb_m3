@@ -26,6 +26,17 @@
 ## 运行
 
 ```bash
-python3 demo.py                          # 固定窗口计数演示
-python3 -m unittest discover -s tests -v # 行为基线测试
+python3 demo.py                          # 固定窗口 + 令牌桶整形两段演示
+python3 -m unittest discover -s tests -v # 基线与新行为测试
 ```
+
+## 实现说明
+
+- `shapeq/shaper.py` 的 `TokenBucketShaper(rate, capacity, overflow, max_wait, max_queue, clock)` 与旧限流器并存，`allow/stats` 语义不变。
+- 每租户一个独立令牌桶：`capacity` 吸收突发，按 `rate` 令牌/秒惰性补充，长期速率不超过 `rate`、瞬时突发不超过 `capacity`。
+- 公平靠“不共享”：租户只在自己桶里取令牌，打满只欠自己的债，碰不到别人桶里的令牌，因此没有租户会被邻居饿死。
+- 代价是空闲租户的未用配额不会借给忙租户（非 work-conserving）；要共享需另加全局桶层，会重新引入有界干扰。
+- 超出按 `overflow` 处理：`REJECT` 立即拒；`QUEUE` 进本租户 FIFO，入队即按补充速率算好 `ready_at` 并预占令牌（桶可为负、不允许插队），超 `max_wait` 或 `max_queue` 分别拒以 `max_wait_exceeded` / `queue_full`。
+- 注入时钟推进后调 `pump()` 放行到期请求；默认 `time.monotonic` 时守护线程自动 pump，`wait()` 阻塞取结果。
+- `stats()` 新增 `queued`、`tokens_remaining`、`tokens_by_tenant`、`tenants`，并在快照时惰性补充到当前时刻。
+- 新行为测试见 `tests/test_shaper.py`，全部用手动时钟对齐补充点与等待上限；基线 `tests/test_limiter.py` 未改动。
