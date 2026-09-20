@@ -5,6 +5,7 @@
 """
 
 from pathmatch.match import match
+from pathmatch.ignore import IgnoreRules, matched
 
 PATTERNS = ["*.py", "src/*.py", "src/*/*.py", "assets/*", "docs/*.md"]
 TREE = [
@@ -15,6 +16,42 @@ TREE = [
     "assets/logo.svg",
     "docs/notes.md",
     "build.log",
+]
+
+ROOT_IGNORE = """\
+# 生成物
+*.o
+*.log
+build/
+!keep.log
+docs/**
+!docs/spec.md
+"""
+
+SRC_IGNORE = """\
+# src 目录自己的规则：重新放开调试日志
+!debug.log
+*.tmp
+"""
+
+IGNORE_FILES = {
+    "": ROOT_IGNORE,
+    "src": SRC_IGNORE,
+}
+
+IGNORE_TREE = [
+    ("main.py", False),
+    ("build", True),
+    ("build/app.o", False),
+    ("src", True),
+    ("src/app.o", False),
+    ("src/debug.log", False),
+    ("src/scratch.tmp", False),
+    ("docs", True),
+    ("docs/spec.md", False),
+    ("docs/draft.md", False),
+    ("keep.log", False),
+    ("error.log", False),
 ]
 
 
@@ -30,9 +67,24 @@ def main():
     for p in TREE:
         print(f"  {str(match('src/*.py', p)):<5} {p}")
 
-    # TODO(.gitignore 语义): IgnoreRules 实现后，在这里用一组
-    # .gitignore 规则（含否定、目录限定、嵌套优先）重新过滤这批路径，
-    # 展示每条是 ignored 还是 allowed，以及决定性的那条规则。
+    print("\n=== .gitignore 语义：否定 / 目录限定 / 跨段 ** / 嵌套优先 ===")
+    compiled = {base: IgnoreRules(text, base) for base, text in IGNORE_FILES.items()}
+    pruned = []
+    for path, is_dir in IGNORE_TREE:
+        if any(path == d or path.startswith(d + "/") for d in pruned):
+            continue
+        parts = path.split("/")
+        prefixes = [""] + ["/".join(parts[:i]) for i in range(1, len(parts))]
+        stack = [compiled[pre] for pre in prefixes if pre in compiled]
+        status, rule = matched(path, is_dir, stack)
+        decided = f"{rule.text}  (@{rule.base or '.'}:{rule.lineno})" if rule else "-"
+        suffix = "/" if is_dir else ""
+        print(f"  {status:<7} {path + suffix:<22} <- {decided}")
+        if is_dir and status == "ignored":
+            pruned.append(path)
+    skipped = [p for p, _ in IGNORE_TREE if any(p.startswith(d + "/") for d in pruned)]
+    for p in skipped:
+        print(f"  pruned  {p:<22} <- 父目录已被忽略")
 
 
 if __name__ == "__main__":
