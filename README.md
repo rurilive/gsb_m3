@@ -25,3 +25,10 @@
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- `model.py`：`Cell`（文本 + 换行后的行块，宽/高是算好的数据）、`Column`（一列格子，列宽取最大）；拼装不在模型里
+- `render.py`：统一管线——原始数据 → Cell/Column 模型 → 按样式表拼边框和行 → 文本
+- `styles.py`：边框样式表，每套样式是 `v`/`fill`/`top`/`mid`/`bot` 一组字符数据，加样式只加表项
+- `width.py`：`text_width()` 是纯函数（len 口径）；`measure()` 是缓存的唯一出入口

@@ -1,50 +1,13 @@
-"""texttbl.render：把二维数据渲染成带边框的文本表格。
+"""texttbl.render：Table 对外 API 与统一渲染管线。
 
-监控后台和 CLI 工具在用。2019 年写的，输出被 tests/ 逐字节锁着
-（有几个后台直接 diff 表格输出做告警），别动格式。
+管线：原始数据 -> Cell/Column 模型（model.py，宽/高是数据）
+     -> 按样式表（styles.py）拼边框和行 -> 整表文本。
+输出被 tests/ 逐字节锁着，格式口径一个都不能变。
 """
 
-# 列宽缓存（模块级，历史原因）
-_WIDTH_CACHE = {}
-
-
-def _text_width(s):
-    """显示宽度。历史口径：按 len() 算，中文也按 1 个宽。"""
-    if s in _WIDTH_CACHE:
-        return _WIDTH_CACHE[s]
-    w = len(s)
-    _WIDTH_CACHE[s] = w
-    return w
-
-
-def _wrap_cell(text, wrap):
-    """把单元格文本切成若干行。wrap<=0 不换行。
-
-    词间换行（连续空白当一个分隔），超长词硬切。历史口径，别改。
-    """
-    if wrap is None or wrap <= 0:
-        return [text]
-    tokens = text.split()
-    if len(tokens) == 0:
-        return [""]
-    lines = []
-    cur = ""
-    for word in tokens:
-        while _text_width(word) > wrap:
-            if cur != "":
-                lines.append(cur)
-                cur = ""
-            lines.append(word[0:wrap])
-            word = word[wrap:]
-        if cur == "":
-            cur = word
-        elif _text_width(cur) + 1 + _text_width(word) <= wrap:
-            cur = cur + " " + word
-        else:
-            lines.append(cur)
-            cur = word
-    lines.append(cur)
-    return lines
+from texttbl.model import Cell, Column
+from texttbl.styles import border_line, get_style, markdown_separator
+from texttbl.width import measure
 
 
 class Table(object):
@@ -68,98 +31,54 @@ class Table(object):
         self._rows.append([str(c) for c in cells])
         return self
 
-    def render(self):
+    def _build_model(self):
+        """原始数据 -> (表头格, 数据行格, 列)。缺失的格子补空 Cell。"""
         cols = len(self._headers)
-        # 单元格切块（含表头），grid[0] 是表头
-        grid = [[_wrap_cell(h, self._wrap) for h in self._headers]]
+        header = [Cell(h, self._wrap) for h in self._headers]
+        rows = []
         for row in self._rows:
-            blocks = []
-            for i in range(cols):
-                if i < len(row):
-                    blocks.append(_wrap_cell(row[i], self._wrap))
-                else:
-                    blocks.append([""])
-            grid.append(blocks)
-        # 列宽：全表（含表头）逐块扫最大
-        widths = []
-        for i in range(cols):
-            w = 0
-            for blocks in grid:
-                for ln in blocks[i]:
-                    lw = _text_width(ln)
-                    if lw > w:
-                        w = lw
-            widths.append(w)
+            rows.append(
+                [
+                    Cell(row[i], self._wrap) if i < len(row) else Cell("", self._wrap)
+                    for i in range(cols)
+                ]
+            )
+        columns = [
+            Column([header[i]] + [row[i] for row in rows]) for i in range(cols)
+        ]
+        return header, rows, columns
+
+    def render(self):
+        style = get_style(self._style)
+        header, rows, columns = self._build_model()
+        widths = [col.width for col in columns]
 
         out_lines = []
-        if self._style == "ascii":
-            top = "+" + "+".join(["-" * (w + 2) for w in widths]) + "+"
-            mid = "+" + "+".join(["-" * (w + 2) for w in widths]) + "+"
-            bot = "+" + "+".join(["-" * (w + 2) for w in widths]) + "+"
-            v = "|"
-        elif self._style == "light":
-            top = "┌" + "┬".join(["─" * (w + 2) for w in widths]) + "┐"
-            mid = "├" + "┼".join(["─" * (w + 2) for w in widths]) + "┤"
-            bot = "└" + "┴".join(["─" * (w + 2) for w in widths]) + "┘"
-            v = "│"
-        elif self._style == "heavy":
-            top = "┏" + "┳".join(["━" * (w + 2) for w in widths]) + "┓"
-            mid = "┣" + "╋".join(["━" * (w + 2) for w in widths]) + "┫"
-            bot = "┗" + "┻".join(["━" * (w + 2) for w in widths]) + "┛"
-            v = "┃"
-        elif self._style == "markdown":
-            top = None
-            mid = None
-            bot = None
-            v = "|"
-        else:
-            raise ValueError("unknown style: %r" % (self._style,))
-
+        top = border_line(style, widths, "top")
         if top is not None:
             out_lines.append(top)
-        # 表头块（表头也可能换行，逐行渲染）
-        hblocks = grid[0]
-        hmax = 1
-        for b in hblocks:
-            if len(b) > hmax:
-                hmax = len(b)
-        for j in range(hmax):
-            parts = []
-            for i in range(cols):
-                if j < len(hblocks[i]):
-                    txt = hblocks[i][j]
-                else:
-                    txt = ""
-                parts.append(" " + txt + " " * (widths[i] - _text_width(txt)) + " ")
-            out_lines.append(v + v.join(parts) + v)
-        if self._style == "markdown":
-            # markdown 的分隔行：横线和列宽一致（历史写法）
-            sep = "|"
-            for w in widths:
-                sep = sep + " " + "-" * w + " |"
-            out_lines.append(sep)
-        elif len(grid) > 1:
-            out_lines.append(mid)
-        # 数据行块
-        for blocks in grid[1:]:
-            rmax = 1
-            for b in blocks:
-                if len(b) > rmax:
-                    rmax = len(b)
-            for j in range(rmax):
-                parts = []
-                for i in range(cols):
-                    if j < len(blocks[i]):
-                        txt = blocks[i][j]
-                    else:
-                        txt = ""
-                    parts.append(
-                        " " + txt + " " * (widths[i] - _text_width(txt)) + " "
-                    )
-                out_lines.append(v + v.join(parts) + v)
+        out_lines.extend(_render_row(header, widths, style))
+        if not style.get("bordered", True):
+            out_lines.append(markdown_separator(widths))
+        elif len(rows) > 0:
+            out_lines.append(border_line(style, widths, "mid"))
+        for row in rows:
+            out_lines.extend(_render_row(row, widths, style))
+        bot = border_line(style, widths, "bot")
         if bot is not None:
             out_lines.append(bot)
-        text = ""
-        for ln in out_lines:
-            text = text + ln + "\n"
-        return text[0:len(text) - 1]
+        return "\n".join(out_lines)
+
+
+def _render_row(cells, widths, style):
+    """把一行格子（表头或数据行）渲染成若干视觉行，左对齐右侧补空格。"""
+    v = style["v"]
+    height = max([1] + [cell.height for cell in cells])
+    out = []
+    for j in range(height):
+        parts = []
+        for i, cell in enumerate(cells):
+            txt = cell.line(j)
+            parts.append(" " + txt + " " * (widths[i] - measure(txt)) + " ")
+        out.append(v + v.join(parts) + v)
+    return out
