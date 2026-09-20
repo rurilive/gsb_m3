@@ -1,12 +1,13 @@
-"""LeaseManager 现状演示。
+"""LeaseManager 演示。
 
 第一段：发放 / 查询 / 归还，以及 TTL 到期后 get 变 None。
-第二段：预留的续期与回收演示位子（见文末注释）。
+第二段：看护对象按节拍自动续期、续期失败立刻通知，以及过期租约回收。
 
-全程用假时钟，跑起来不需要真实等待。
+全程用假时钟，跑起来不需要真实等待；主循环的节拍直接用 tick 驱动，
+不起任何真线程。
 """
 
-from leasekit.lease import LeaseManager
+from leasekit.lease import LeaseManager, LeaseWatcher
 
 
 class DemoClock:
@@ -47,12 +48,43 @@ def main():
     s = manager.stats()
     print(f"  stats: granted={s['granted']} released={s['released']} live={s['live']}")
 
-    # TODO(续期改造): 续期与回收实现后，在这里加第三段演示：
-    # 让 worker-2 拿一条租约、由一个看护对象按周期自动续期，
-    # 推进时钟跨过若干续期点看 expires_at 往后走；再让续期失败
-    # （比如持有者被换掉），看持有者怎么收到通知；最后把几条
-    # 没人续的租约放凉，跑一次回收，看它们从内存消失、stats 里
-    # reaped 计数上涨。
+    print("=== 看护续期 / 失败通知 / 回收 ===")
+    manager.reap_expired()         # 先把上一段到期未收的残留清干净
+    long_lease = manager.acquire("long-task", ttl=30.0)
+
+    def report_loss(lease_id, holder):
+        print(f"  !! {holder} 收到通知：租约 {lease_id[:8]} 没续上，立刻停手，不再写分片")
+
+    watcher = LeaseWatcher(manager, long_lease, "long-task", interval=10.0,
+                           on_lost=report_loss)
+
+    def scheduler_tick(seconds):
+        """模拟调度器主循环一拍：推进时钟 -> 驱动看护 -> 顺手回收。"""
+        clock.advance(seconds)
+        watcher.tick()
+        reaped = manager.reap_expired()
+        if reaped:
+            print(f"  回收了 {reaped} 条过期租约")
+
+    print(f"  long-task 拿到租约 {long_lease[:8]}，expires_at=30.0s，整理任务要跑很久")
+    scheduler_tick(10.0)
+    scheduler_tick(10.0)
+    print(f"  跨过两个续期点后 expires_at={manager.get(long_lease).expires_at}s，任务安全")
+
+    orphan = manager.acquire("forgotten", ttl=10.0)
+    print("  forgotten 没配看护，租约放凉中……")
+    scheduler_tick(10.0)          # forgotten 到期被回收；long-task 刚续上，活下来
+    print(f"  forgotten 还在吗: {manager.get(orphan) is not None}")
+    print(f"  long-task 还在吗: {manager.get(long_lease) is not None}")
+
+    print("  -- 主循环卡死 30s（比如 GC），期间没人驱动看护 --")
+    clock.advance(30.0)
+    manager.reap_expired()        # 回收先跑：租约已过期，被清出内存
+    watcher.tick()                # 看护这一拍才醒来，续期落空 -> 立刻通知
+
+    s = manager.stats()
+    print(f"  stats: granted={s['granted']} released={s['released']} "
+          f"reaped={s['reaped']} live={s['live']}")
 
 
 if __name__ == "__main__":
