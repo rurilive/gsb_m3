@@ -88,3 +88,17 @@ class IfNode(Node):
         branch = self.body if expr.evaluate(self.cond, ctx.resolve) else self.orelse
         for child in branch:
             child.render(out, ctx)
+
+
+class IncludeNode(Node):
+    """{% include "name.html" %}：在当前上下文展开注册表中的命名模板。
+
+    不新建作用域，被包含模板与外层共用同一套变量；展开结果原样插入，
+    不再二次转义；嵌套深度由 Engine.max_include_depth 限制。
+    """
+
+    def __init__(self, template_name):
+        self.template_name = template_name
+
+    def render(self, out, ctx):
+        out.append(ctx.engine.render_include(self.template_name, ctx))

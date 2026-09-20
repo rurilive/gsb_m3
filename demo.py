@@ -1,6 +1,6 @@
-"""templet 现状演示：变量、过滤器、for/if 与自动转义。"""
+"""templet 现状演示：变量、过滤器、for/if、自动转义与 include。"""
 
-from templet import Engine
+from templet import Engine, TemplateCycleError
 
 INVOICE = """\
 尊敬的 {{ customer.name }}：
@@ -18,6 +18,23 @@ PAGE = """\
 <h1>{{ title }}</h1>
 <p>{{ user_input }}</p>
 <p>{{ user_input | safe }}</p>
+"""
+
+HEADER = """\
+<header>templet 运营页 · {{ site }}</header>
+"""
+
+FOOTER = """\
+<footer>© {{ year }} {{ site }} · 联系客服</footer>
+"""
+
+LAYOUT = """\
+{% include "header.html" %}
+<main>
+  <h1>{{ title }}</h1>
+  <p>{{ body }}</p>
+</main>
+{% include "footer.html" %}
 """
 
 
@@ -40,8 +57,25 @@ def main():
         "user_input": '<script>alert("xss")</script>',
     }))
 
-    # TODO(下个版本): include 节点落地后，在这里演示页面骨架 include
-    # 公共片段，以及 include 深度超限时 TemplateCycleError 的报错路径。
+    print("=== 公共头部/底部（include 共用上下文，展开不再二次转义） ===")
+    engine.register("header.html", HEADER)
+    engine.register("footer.html", FOOTER)
+    print(engine.render_string(LAYOUT, {
+        "site": "橘子 & 云服务",
+        "year": 2026,
+        "title": "版本公告",
+        "body": "公共片段与页面骨架共用同一套上下文变量。",
+    }))
+
+    print("=== include 深度超限 -> TemplateCycleError ===")
+    e = Engine(max_include_depth=2)
+    e.register("a.html", 'A{% include "b.html" %}')
+    e.register("b.html", 'B{% include "c.html" %}')
+    e.register("c.html", 'C{% include "a.html" %}')
+    try:
+        e.render("a.html")
+    except TemplateCycleError as exc:
+        print("TemplateCycleError:", exc)
 
 
 if __name__ == "__main__":
