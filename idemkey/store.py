@@ -58,9 +58,9 @@ class IdempotencyStore:
         with self._lock:
             self._purge(now)
             record = self._records.get(key)
-            if record is not None:
+            if record is not None and record.finished_at is not None:
                 return False
-            # 先把键占上，免得同一个键并发送进来跑两遍
+            # 记录还在但一直没收尾，说明上次处理中途失败，允许重新开工
             self._records[key] = _Record(None, now, None)
             self._save()
             return True
@@ -76,6 +76,7 @@ class IdempotencyStore:
             else:
                 record.result = result
                 record.finished_at = now
+            self._save()
             return result
 
     def get(self, key):
@@ -92,8 +93,8 @@ class IdempotencyStore:
     # -- 内部实现 --
 
     def _normalize(self, key):
-        """键的规范化：去掉首尾空白，字母统一小写。"""
-        return key.strip().lower()
+        """键的规范化：只去首尾空白；大小写敏感，不同的单号不并键。"""
+        return key.strip()
 
     def _purge(self, now):
         """清掉已经过期的记录。"""
@@ -102,10 +103,19 @@ class IdempotencyStore:
         expired = [
             key
             for key, record in self._records.items()
-            if now - record.created_at >= self._ttl
+            if now - self._expiry_anchor(record) >= self._ttl
         ]
         for key in expired:
             del self._records[key]
+        if expired:
+            self._save()
+
+    @staticmethod
+    def _expiry_anchor(record):
+        """有效期的起算点：已收尾的记录从完成时刻起算，没收尾的按占位时刻。"""
+        if record.finished_at is not None:
+            return record.finished_at
+        return record.created_at
 
     def _load(self):
         """从磁盘读回上次的记录。"""

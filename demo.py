@@ -1,10 +1,10 @@
-"""idemkey 现状演示：幂等键没兜住重复扣款的几类现象。
+"""idemkey 修复后演示：幂等键兜住重复扣款的几类场景。
 
 逐段演示四个现象：
-  1. 只差大小写的两个单号被当成同一笔，后一笔拿回前一单的回执
-  2. 服务重启后键还在、结果没了，重发被判成重复
-  3. 处理中途失败，键从此卡死，永远回一份空结果
-  4. 耗时请求刚写完结果，还没到有效期就被清掉
+  1. 只差大小写的两个单号各算各的，互不串单
+  2. 服务重启后键和结果都在，重发正确回放
+  3. 处理中途失败，键可以重新开工
+  4. 耗时请求的有效期从收工时刻起算，结果不会提前消失
 """
 
 import os
@@ -27,15 +27,17 @@ class FakeClock:
 
 
 def demo_case_collision():
-    print("=== 1. 大小写不同的两个单号被并成一笔 ===")
+    print("=== 1. 只差大小写的两个单号各算各的 ===")
     store = IdempotencyStore()
     print("  begin('Order-7001') ->", store.begin("Order-7001"))
     store.finish("Order-7001", {"order": "Order-7001", "amount": 100})
     print("  Order-7001 收工，收款 100")
     print("  begin('order-7001') ->", store.begin("order-7001"),
-          "（这是一笔新单，本该开工）")
-    print("  get('order-7001')   ->", store.get("order-7001"),
-          "（拿回的是另一笔单子的回执）")
+          "（新单正常开工）")
+    store.finish("order-7001", {"order": "order-7001", "amount": 40})
+    print("  get('Order-7001') ->", store.get("Order-7001"))
+    print("  get('order-7001') ->", store.get("order-7001"),
+          "（两笔各回各的回执）")
 
 
 def demo_restart_loses_results():
@@ -47,13 +49,13 @@ def demo_restart_loses_results():
         before.finish("pay-88", {"amount": 250, "state": "paid"})
         print("  重启前 get('pay-88')  ->", before.get("pay-88"))
         after = IdempotencyStore(path=path)
-        print("  重启后 get('pay-88')  ->", after.get("pay-88"), "（结果丢了）")
+        print("  重启后 get('pay-88')  ->", after.get("pay-88"), "（结果还在）")
         print("  重启后 begin('pay-88')->", after.begin("pay-88"),
-              "（键还在，重发被判成重复）")
+              "（重发被判成重复，直接回放上面的结果）")
 
 
 def demo_halfway_failure():
-    print("\n=== 3. 处理中途失败，键被卡死 ===")
+    print("\n=== 3. 处理中途失败，键可以重新开工 ===")
     store = IdempotencyStore()
     attempts = {"n": 0}
 
@@ -75,11 +77,11 @@ def demo_halfway_failure():
     except RuntimeError as exc:
         print("  第一次提交失败:", exc)
     print("  同一笔重发拿回:", submit("pay-99"),
-          "（被判成已处理，回一份空结果，再也发不出去）")
+          "（重新开工，这一单正常扣款）")
 
 
 def demo_expiry_from_begin():
-    print("\n=== 4. 耗时请求的结果还没焐热就被清掉 ===")
+    print("\n=== 4. 耗时请求的有效期从收工时刻起算 ===")
     clock = FakeClock()
     store = IdempotencyStore(ttl=60, clock=clock)
     store.begin("pay-77")
@@ -87,7 +89,10 @@ def demo_expiry_from_begin():
     store.finish("pay-77", {"amount": 300})
     print("  ttl=60，这单从开工到收工花了 90 秒")
     print("  finish 之后马上 get('pay-77') ->", store.get("pay-77"),
-          "（记录按开工时刻算，早被清掉了）")
+          "（从收工起算，结果还在）")
+    clock.advance(61)                 # 收工后又过了 61 秒
+    print("  收工 61 秒后 get('pay-77')   ->", store.get("pay-77"),
+          "（过了有效期才被清掉）")
 
 
 def main():
