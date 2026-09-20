@@ -22,3 +22,12 @@
 python3 demo.py
 python3 -m unittest discover -s tests -v
 ```
+
+## 结构说明
+
+- `constants.py`：全部历史口径常量——行长上限 8192、CR/LF、空格/tab、`HTTP/` 前缀等，别处不再出现字节魔法数
+- `tokenizer.py`：只做字节层的事，维护增量缓冲，按 LF 切行并剥行尾 CR，行长限制（含 CR 的整行口径）在这一层强制
+- `message.py`：HTTP 语义层，`RequestReader` 按 请求行 → 头部 → chunked/CL body 显式状态推进，`ParseError` 与全部错误文本都在这层
+- `parser.py`：对外门面，三个公开对象签名不变；`parse_request` 只是把数据一次 feed 完再 finish 的薄封装
+- 状态推进在 `RequestReader._pump`：每个状态处理器返回“数据不够”即停在原处，残缺行/半截 body 留在 tokenizer 缓冲里
+- 接得住流式是因为没有“一口气吃完”假设：数据可以任意分段 `feed`，凑够一行或够 N 字节才前进，`finish()` 再按历史口径对截断报错
