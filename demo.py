@@ -11,12 +11,20 @@ default off
 flag beta-ui
 when or(vip eq true, age ge 18) -> on
 default off
+
+flag corp-rollout
+when and(not(email regex "@corp\\.example\\.com$"), vip eq false) -> off
+when email regex "@corp\\.example\\.com$" -> on
+default off
 """
 
 CONTEXTS = [
-    ("cn-pro 请求", {"country": "CN", "plan": "pro", "vip": False, "age": 17}),
-    ("us-vip 请求", {"country": "US", "plan": "free", "vip": True, "age": 30}),
-    ("jp 新用户", {"country": "JP", "plan": "free", "vip": False, "age": 9}),
+    ("cn-pro 请求", {"country": "CN", "plan": "pro", "vip": False,
+                     "age": 17, "email": "li@corp.example.com"}),
+    ("us-vip 请求", {"country": "US", "plan": "free", "vip": True,
+                     "age": 30, "email": "joe@other.example.com"}),
+    ("jp 新用户", {"country": "JP", "plan": "free", "vip": False,
+                   "age": 9, "email": "hana@example.com"}),
 ]
 
 
@@ -28,9 +36,6 @@ def main():
             decision = engine.evaluate(flag, ctx)
             print(decision.explain())
             print(f"  （{label}）\n")
-
-    # TODO(正则规则): regex 匹配器与 not() 组合器就位后，在这里加一条用正则
-    # 圈定邮箱域的规则演示，展示命中与未命中两种解释输出。
 
 
 if __name__ == "__main__":

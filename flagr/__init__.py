@@ -8,8 +8,10 @@ from .engine import Decision, FlagEngine, FlagSpec, Rule
 from .errors import FlagrError, RuleCompileError, UnknownFlagError
 from .lexer import Token, tokenize
 from .matchers import (
-    All, Any, Compare, Contains, Equals, InSet, Matcher, NotEquals,
+    All, Any, Compare, Contains, Equals, InSet, Matcher, Not, NotEquals,
+    Regex,
 )
+from .regex_safety import RegexSafetyError, check_pattern
 
 __all__ = [
     "COMBINATOR_TABLE", "OP_TABLE", "compile_rules",
@@ -17,5 +19,5 @@ __all__ = [
     "FlagrError", "RuleCompileError", "UnknownFlagError",
     "Token", "tokenize",
     "All", "Any", "Compare", "Contains", "Equals", "InSet", "Matcher",
-    "NotEquals",
+    "Not", "NotEquals", "Regex", "RegexSafetyError", "check_pattern",
 ]

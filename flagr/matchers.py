@@ -6,6 +6,10 @@
   数字之间 int/float 互通；比较器的上下文值必须可比较（数字）
 """
 
+import re
+
+from .regex_safety import RegexSafetyError, check_pattern
+
 _MISSING = object()
 
 
@@ -96,6 +100,32 @@ class Contains(Matcher):
         return f"{self.field} contains {_fmt(self.value)}"
 
 
+class Regex(Matcher):
+    """字段值（转字符串后）被正则按 re.search 命中。
+
+    pattern 在构造时（即编译期）完成静态安全检查与编译；匹配对象是
+    编译产物，无可变状态，可被多个工作线程并发求值。
+    """
+
+    def __init__(self, field, pattern):
+        try:
+            check_pattern(pattern)
+            self.regex = re.compile(pattern)
+        except RegexSafetyError:
+            raise
+        except re.error as exc:
+            raise RegexSafetyError(f"非法正则 {pattern!r}：{exc}") from None
+        self.field = field
+        self.pattern = pattern
+
+    def matches(self, ctx):
+        v = ctx.get(self.field, _MISSING)
+        return v is not _MISSING and self.regex.search(str(v)) is not None
+
+    def describe(self):
+        return f'{self.field} regex "{self.pattern}"'
+
+
 class Compare(Matcher):
     """数字比较：gt / ge / lt / le。上下文值不是数字判 miss。"""
 
@@ -140,3 +170,16 @@ class Any(Matcher):
 
     def describe(self):
         return "or(" + ", ".join(c.describe() for c in self.children) + ")"
+
+
+class Not(Matcher):
+    """not 组合器：唯一子条件不成立时命中（逻辑取反）。"""
+
+    def __init__(self, child):
+        self.child = child
+
+    def matches(self, ctx):
+        return not self.child.matches(ctx)
+
+    def describe(self):
+        return f"not({self.child.describe()})"

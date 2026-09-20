@@ -11,21 +11,29 @@ DSL 语法（一行一条语句）：
     when 表达式 -> on|off
     default on|off
 
-    表达式 := and(表达式, 表达式, ...) | or(表达式, 表达式, ...) | 子句
+    表达式 := and(表达式, 表达式, ...) | or(表达式, 表达式, ...)
+             | not(表达式) | 子句
     子句   := 字段 操作符 取值 | 字段 in [取值, 取值, ...]
-    操作符 := eq ne contains gt ge lt le in
+    操作符 := eq ne contains regex gt ge lt le in
     取值   := 带引号字符串 | 数字 | true | false | 裸词（按字符串处理）
+
+regex 的取值必须是带引号字符串（正则文本），语义为 re.search；
+可能引发灾难性回溯的模式（嵌套量词等）在编译期直接拒绝。
 """
 
 from .engine import FlagEngine, FlagSpec, Rule
 from .errors import RuleCompileError
 from .lexer import tokenize
-from .matchers import All, Any, Compare, Contains, Equals, InSet, NotEquals
+from .matchers import (
+    All, Any, Compare, Contains, Equals, InSet, Not, NotEquals, Regex,
+)
+from .regex_safety import RegexSafetyError
 
 OP_TABLE = {
     "eq": Equals,
     "ne": NotEquals,
     "contains": Contains,
+    "regex": Regex,
     "in": InSet,
     "gt": lambda f, v: Compare("gt", f, v),
     "ge": lambda f, v: Compare("ge", f, v),
@@ -38,6 +46,14 @@ NUMERIC_OPS = ("gt", "ge", "lt", "le")
 COMBINATOR_TABLE = {
     "and": All,
     "or": Any,
+    "not": Not,
+}
+
+# 各组合器允许的参数个数：not 只取一个，and/or 至少两个
+_COMBINATOR_ARITY = {
+    "and": (2, None),
+    "or": (2, None),
+    "not": (1, 1),
 }
 
 
@@ -136,7 +152,11 @@ class _Parser:
 
     def parse_expr(self):
         tok = self.expect("WORD", "应为表达式")
-        if tok.value in COMBINATOR_TABLE:
+        if tok.value in ("and", "or"):
+            return self.parse_combinator(tok)
+        # not 需前瞻括号：无括号时 not 仍是合法字段名（旧语法兼容）
+        nxt = self.peek()
+        if tok.value == "not" and nxt is not None and nxt.kind == "LPAREN":
             return self.parse_combinator(tok)
         return self.parse_clause(tok)
 
@@ -151,10 +171,15 @@ class _Parser:
             self.next()
             children.append(self.parse_expr())
         self.expect("RPAREN", f"{kw.value}(...) 缺少右括号")
-        if len(children) < 2:
+        lo, hi = _COMBINATOR_ARITY[kw.value]
+        if len(children) < lo or (hi is not None and len(children) > hi):
+            if kw.value == "not":
+                raise RuleCompileError(
+                    "not 只接受 1 个参数", kw.line, kw.col)
             raise RuleCompileError(
                 f"{kw.value} 至少需要 2 个参数", kw.line, kw.col)
-        return combinator(children)
+        return combinator(children) if kw.value in ("and", "or") \
+            else combinator(children[0])
 
     def parse_clause(self, field_tok):
         op_tok = self.expect("WORD", f"字段 {field_tok.value!r} 后应有操作符")
@@ -164,6 +189,17 @@ class _Parser:
         if op_tok.value == "in":
             values = self.parse_value_list()
             return InSet(field_tok.value, values)
+        if op_tok.value == "regex":
+            value_tok = self.next()
+            if value_tok is None or value_tok.kind != "STR":
+                at = (value_tok.line, value_tok.col) if value_tok else (1, 1)
+                raise RuleCompileError(
+                    "regex 需要带引号的字符串取值", *at)
+            try:
+                return Regex(field_tok.value, value_tok.value)
+            except RegexSafetyError as exc:
+                raise RuleCompileError(
+                    str(exc), value_tok.line, value_tok.col) from None
         value_tok = self.parse_value_token()
         value = self.token_value(value_tok)
         if op_tok.value in NUMERIC_OPS and value_tok.kind != "NUM":
