@@ -25,6 +25,7 @@ class QuorumLease:
         self._leader = None
         self._term = 0
         self._expires_at = None
+        self._generation = 0
 
     # ---- 成员表视图 ----
 
@@ -50,11 +51,14 @@ class QuorumLease:
         """在在线成员里选主，取名字最小的那个。
 
         在线成员凑不齐多数派时返回 None，不动现有 leader。
-        选出新 leader 时任期加一。
+        选出新 leader 时任期加一；换主时租约代数加一并清掉旧租约。
         """
         alive = self.alive_members()
         if len(alive) < self.quorum_size():
             return None
+        if alive[0] != self._leader:
+            self._generation += 1
+            self._expires_at = None
         self._leader = alive[0]
         self._term += 1
         return self._leader
@@ -69,16 +73,64 @@ class QuorumLease:
 
     # ---- 租约 ----
 
-    def renew(self, node):
-        """leader 续租：把到期时刻刷成 now + lease_seconds。
+    def renew(self, node, receipts=None):
+        """leader 续租。
 
-        不是当前 leader 就返回 False，不改到期时刻。
+        receipts 为 None 时是本地续租：到期时刻刷成 now + lease_seconds。
+        receipts 是 dict(member -> 到期时刻) 时走多数派协商：回执里在线
+        成员凑不齐当前多数派就拒绝；接受时只认回执中最短的到期点。
+
+        不是当前 leader、或在线成员凑不齐多数派，都返回 False 且不改租约。
         """
         if node != self._leader:
             return False
+        if not self.has_quorum():
+            return False
+        if receipts is not None:
+            valid = [exp for m, exp in receipts.items() if self._voters.get(m)]
+            if len(valid) < self.quorum_size():
+                return False
+            self._expires_at = min(valid)
+            return True
         self._expires_at = self._clock() + self._lease_seconds
         return True
 
     def lease_expires_at(self):
         """当前租约的到期时刻，没有租约时为 None。"""
         return self._expires_at
+
+    # ---- 退位与代数 ----
+
+    def abdicate(self):
+        """主动退位：清空 leader 与租约，租约代数加一。
+
+        leader 发现自己凑不齐多数派（分区、缩容）时必须调用；
+        退位后不再发写许可。当前没有 leader 时返回 False，什么都不做。
+        """
+        if self._leader is None:
+            return False
+        self._leader = None
+        self._expires_at = None
+        self._generation += 1
+        return True
+
+    def generation(self):
+        """租约代数：换主与退位时自增。"""
+        return self._generation
+
+    def resync(self):
+        """对齐租约代数：返回当前代数。
+
+        分区归来的节点用它刷新本地缓存的代数；缓存的旧代数拿不到写许可。
+        """
+        return self._generation
+
+    def write_permit(self, node, generation):
+        """写许可：node 是 leader、代数匹配、租约未到期且在线成员够多数派。"""
+        if node != self._leader:
+            return False
+        if generation != self._generation:
+            return False
+        if self._expires_at is None or self._clock() >= self._expires_at:
+            return False
+        return self.has_quorum()

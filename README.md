@@ -29,3 +29,11 @@
 python3 demo.py                          # 选主与续租演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 协商口径：`renew(node, receipts)` 收各成员回执的到期时刻，在线成员的回执凑不齐当前多数派即拒绝；接受时只认回执里最短的到期点。
+- 多数派按当前成员表现算：成员表一增一减，`quorum_size()`/`has_quorum()` 立即按新配置生效，续租与写许可都按新多数派重判。
+- 退位时机：leader 发现 `has_quorum()` 为假（分区、缩容）时必须调 `abdicate()`，清空 leader 与租约，此后不发写许可。
+- 代数与写许可：`generation()` 在换主和退位时自增；`write_permit(node, generation)` 要求是现任 leader、代数相等、租约未到期且有多数派。
+- 分区归来的节点用 `resync()` 读回当前代数对齐本地缓存，旧代数一律拿不到写许可。
