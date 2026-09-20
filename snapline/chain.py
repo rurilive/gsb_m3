@@ -1,7 +1,8 @@
 """对象快照链。
 
 每个对象维护一条按版本号记录的状态链：snapshot() 追加一版，
-at() 回读某一版，latest() 取当前版本，history() 列出全部版本。
+at() 回读某一版，latest() 取当前版本，history() 列出全部版本，
+ancestors() 从任意版本沿链一路回走到最早一版。
 时间由注入的 clock 提供，默认 time.monotonic，测试可替换。
 """
 
@@ -34,33 +35,27 @@ class SnapLine:
         self._lock = threading.Lock()
         self._seq = 0
         self._nodes = {}      # obj_id -> {version: _Node}
-        self._tail = {}       # obj_id -> 链上最早的一版
-        self._head = {}       # obj_id -> 物理上最后写入的一版
+        self._tail = {}       # obj_id -> 链上现存最早的一版
+        self._head = {}       # obj_id -> 链上现存最晚的一版
         self._cursor = {}     # obj_id -> 当前版本，rollback 会挪动它
-        self._issued = {}     # obj_id -> 已经发放过的最大版本号
+        self._issued = {}     # obj_id -> 已发放过的最大版本号，只增不减
 
     # -- 写入 ------------------------------------------------------------
 
-    def _next_seq(self):
-        """取下一个提交序号。"""
-        self._seq = self._seq + 1
-        return self._seq
-
-    def _allocate(self, obj_id):
-        """给新快照分配版本号。"""
-        current = self._cursor.get(obj_id)
-        if current is None:
-            return 1
-        return current.version + 1
-
     def snapshot(self, obj_id, state):
         """记一版快照，返回分配到的版本号。"""
-        seq = self._next_seq()
-        version = self._allocate(obj_id)
-        ts = self._clock()
-        node = _Node(version, seq, ts, state)
         with self._lock:
+            # 序号、版本号、时刻在锁内一次性确定：并发提交不重号，
+            # 同一时刻的版本也能按提交先后稳定排序。
+            self._seq += 1
+            seq = self._seq
+            ts = self._clock()
+            # 版本号只从“历史上发过的最大值”往后发；rollback/delete
+            # 挪动的只是当前游标，不会让号段回退去占用旧号。
+            version = self._issued.get(obj_id, 0) + 1
+            self._issued[obj_id] = version
             nodes = self._nodes.setdefault(obj_id, {})
+            node = _Node(version, seq, ts, state)
             nodes[version] = node
             head = self._head.get(obj_id)
             node.prev = head
@@ -70,7 +65,6 @@ class SnapLine:
                 head.next = node
             self._head[obj_id] = node
             self._cursor[obj_id] = node
-            self._issued[obj_id] = version
         return version
 
     def rollback(self, obj_id, version):
@@ -80,9 +74,7 @@ class SnapLine:
             node = nodes.get(version)
             if node is None:
                 raise KeyError(version)
-            # 重新登记一次，表示它成了当前版本
-            nodes.pop(version)
-            nodes[version] = node
+            # 只挪动当前游标：链结构、版本号、已发号段都不动。
             self._cursor[obj_id] = node
 
     def delete(self, obj_id, version):
@@ -93,18 +85,22 @@ class SnapLine:
             if node is None:
                 return False
             prev_node, next_node = node.prev, node.next
+            # 双向摘链：两边的指针都要补，链才不会断在缺口处。
             if prev_node is None:
                 self._tail[obj_id] = next_node
             else:
                 prev_node.next = next_node
             if next_node is None:
                 self._head[obj_id] = prev_node
-            # 摘掉自身，避免残留引用
+            else:
+                next_node.prev = prev_node
             node.prev = None
             node.next = None
             del nodes[version]
             if self._cursor.get(obj_id) is node:
-                self._cursor[obj_id] = prev_node
+                self._cursor[obj_id] = (
+                    prev_node if prev_node is not None else next_node
+                )
             return True
 
     # -- 读取 ------------------------------------------------------------
@@ -112,15 +108,10 @@ class SnapLine:
     def at(self, obj_id, version):
         """回读该对象指定版本的状态，版本不存在返回 None。"""
         with self._lock:
-            nodes = self._nodes.get(obj_id, {})
-            if version not in nodes:
+            node = self._nodes.get(obj_id, {}).get(version)
+            if node is None:
                 return None
-            node = self._head.get(obj_id)
-            while node is not None:
-                if node.version == version:
-                    return node.state
-                node = node.prev
-            return None
+            return node.state
 
     def latest(self, obj_id):
         """取当前版本，返回 (version, state)；对象不存在返回 None。"""
@@ -131,8 +122,29 @@ class SnapLine:
             return (node.version, node.state)
 
     def history(self, obj_id):
-        """按创建时刻列出该对象的全部版本号，旧的在前。"""
+        """按提交先后列出该对象的全部版本号，旧的在前。
+
+        先比时刻，时刻相同再比全局提交序号，因此同一毫秒内的版本
+        严格按提交先后排列，不随 dict 插入顺序或 rollback 漂移。
+        """
         with self._lock:
             nodes = self._nodes.get(obj_id, {})
-            ordered = sorted(nodes.values(), key=lambda n: n.ts)
+            ordered = sorted(nodes.values(), key=lambda n: (n.ts, n.seq))
             return [n.version for n in ordered]
+
+    def ancestors(self, obj_id, version):
+        """从指定版本沿 prev 一路回走到最早一版，返回版本号列表。
+
+        起点版本排在最前，最早版本排在最后；版本不存在抛 KeyError。
+        中间版本被删除后，剩余节点的 prev 会直接跨过缺口，所以从
+        任意现存版本往回走都能走到底、不重不漏。
+        """
+        with self._lock:
+            node = self._nodes.get(obj_id, {}).get(version)
+            if node is None:
+                raise KeyError(version)
+            versions = []
+            while node is not None:
+                versions.append(node.version)
+                node = node.prev
+            return versions
