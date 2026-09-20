@@ -5,11 +5,6 @@
 的参数,参数值可能用双引号包着。
 """
 
-import re
-
-# 参数名 = 引号值,或参数名 = 裸值(到分号为止)
-_PARAM = re.compile(rb"([A-Za-z0-9_.-]+)\s*=\s*(?:\"([^\"]*)\"|([^;]*))")
-
 
 def parse_header_block(block):
     """把头部块解析成 {小写名字: 值},block 不含结尾的空行。"""
@@ -29,17 +24,54 @@ def parse_header_block(block):
 
 
 def parse_params(value):
-    """解析 Content-Disposition 值里的参数,返回 {小写名字: 值}。"""
-    if not value:
+    """解析 Content-Disposition 值里的参数,返回 {小写名字: 值}。
+
+    str 或 bytes 都行(bytes 按 latin-1 解,头部本来就是字节)。
+    引号值里的反斜杠转义要还原(``\\\\"`` -> ``"``、``\\\\\\\\`` ->
+    ``\\\\``),裸值取到分号为止;两种值都不去尾巴,语义与
+    reference.parse_all 完全一致。
+    """
+    if value is None or value == "":
         return {}
+    if isinstance(value, bytes):
+        value = value.decode("latin-1")
     params = {}
-    for m in _PARAM.finditer(value.encode("latin-1")):
-        name = m.group(1).decode("ascii").lower()
-        raw = m.group(2) if m.group(2) is not None else m.group(3)
-        params[name] = _decode_value(raw)
+    pos = 0
+    while True:
+        semi = value.find(";", pos)
+        if semi < 0:
+            return params
+        pos = semi + 1
+        while pos < len(value) and value[pos] in " \t":
+            pos += 1
+        eq = value.find("=", pos)
+        if eq < 0:
+            return params
+        name = value[pos:eq].strip().lower()
+        pos = eq + 1
+        while pos < len(value) and value[pos] in " \t":
+            pos += 1
+        if not name:
+            continue
+        if pos < len(value) and value[pos] == '"':
+            pos += 1
+            chars = []
+            while pos < len(value):
+                ch = value[pos]
+                if ch == "\\" and pos + 1 < len(value):
+                    chars.append(value[pos + 1])
+                    pos += 2
+                    continue
+                if ch == '"':
+                    pos += 1
+                    break
+                chars.append(ch)
+                pos += 1
+            params[name] = "".join(chars)
+        else:
+            end = value.find(";", pos)
+            if end < 0:
+                end = len(value)
+            params[name] = value[pos:end].strip()
+            pos = end
     return params
-
-
-def _decode_value(raw):
-    """参数值还原成文本。"""
-    return raw.decode("utf-8", "replace").strip()

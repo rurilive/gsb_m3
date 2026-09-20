@@ -1,8 +1,8 @@
-"""chunkmime 现状演示。
+"""chunkmime 修复后行为演示。
 
 同一份上传先用整块喂一遍,再按网络到达的块喂一遍,把两边解析
-出来的东西摆在一起看;最后看一下带转义引号的 filename 现在的
-样子。
+出来的东西摆在一起看;最后看一下带转义引号的 filename 和
+reference 算出来的值。所有分块结果都和整块、reference 一致。
 """
 
 from chunkmime import MultipartParser, PartCollector
@@ -60,7 +60,7 @@ def compare(label, whole, chunked):
 
 
 def main():
-    print("=== 1. 整块解析(小表单, 一切正常) ===")
+    print("=== 1. 整块解析(小表单) ===")
     body = build(b"file payload")
     whole = run_chunked(body, [])
     show(whole)

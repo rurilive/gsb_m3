@@ -42,6 +42,37 @@ for part in collector.parts():
 ## 运行
 
 ```bash
-python3 demo.py                          # 现状演示
+python3 demo.py                          # 修复后行为演示
 python3 -m unittest discover -s tests -v # 行为基线测试
+```
+
+## 修复说明
+
+线上真实上传翻车后,`chunkmime/parser.py` 的状态机重写、
+`chunkmime/headers.py` 的参数解析对齐了 `reference.py`,修掉的点:
+
+- 正文里出现分隔行的半截前缀、且切点正好落在那一截后面时,旧逻辑
+  会把前缀当成真分隔行并跳字节,内容从那儿被切开丢一截。新逻辑只把
+  marker 长度量级的后缀留在解析器里,等下一块拿到「marker 后面两个
+  字节」再定性:必须是 `--` 或 `CRLF` 才算分隔行,否则前缀原样补回
+  sink;分隔行(含收尾的 `--`)被切在块边界的任意位置都不再丢字段。
+- 完整 marker 后面跟其他字节(`--abc123X` 这类)按规范只是正文,
+  旧逻辑会误判;现在和 `reference._find_marker` 一样继续往后找。
+- 头部块跨块时旧逻辑找的是 `\n\r\n`,头部值会多出一个尾随回车;
+  现在统一按 `CRLF CRLF` 找结束空行,与切块位置无关。
+- `parse_params` 不再用正则:双引号值里的反斜杠转义会还原
+  (`\"` -> `"`、`\\` -> `\`),值按头部本来的 latin-1 原文返回、
+  不做多余的 strip 和 UTF-8 替换,语义与 reference 完全一致。
+- `finish()` 收到不完整的流(没见到收尾分隔行、头部没收完、开场
+  分隔行残缺等)一律抛 `ParseError`,不再静默当成功;收尾 `--`
+  之后的 epilogue 缺不缺都不影响成功。
+
+解析器手里只留跨块待定的字节(上限约一个分隔行 + 2 字节)和当前
+头部块,正文按块直通 sink、不按字节循环。`tests/test_streaming_fixes.py`
+覆盖了定点回归、逐偏移 + 随机切块对拍、随机截断报错,以及 50MB
+正文的内存/计时(64KiB 块约 0.7s、解析器峰值约 0.3MB,远低于
+8MB / 10s 的验收线)。跑全部测试:
+
+```bash
+python3 -m unittest discover -s tests -v
 ```
