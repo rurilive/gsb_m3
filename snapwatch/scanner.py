@@ -1,4 +1,9 @@
-"""快照扫描：走一遍目录树，把每个节点的元数据和内容摘要记下来。"""
+"""快照扫描：走一遍目录树，只取每个节点的元数据。
+
+扫描阶段绝不读文件内容，digest 按需懒算：静止的大树扫一轮只花 stat 的钱。
+scandir 打不开的目录（比如被 chmod 掉权限）记进 opaque_dirs，不把它名下的
+旧节点当成删除，交给 Watcher 沿用上一份快照。
+"""
 
 import hashlib
 import os
@@ -40,6 +45,7 @@ class Snapshot:
     def __init__(self, root):
         self.root = root
         self.entries = {}
+        self.opaque_dirs = set()
 
     def entry(self, path):
         """相对路径对应的 Entry，没有这个路径时抛 KeyError。"""
@@ -71,6 +77,8 @@ class PollScanner:
         try:
             names = self.fs.scandir(self._abs(rel))
         except OSError:
+            # rel 为空串时是监听根本身；连同子树交给 Watcher 沿用旧快照。
+            snapshot.opaque_dirs.add(rel)
             return
         for name in names:
             child = name if not rel else rel + "/" + name
@@ -78,12 +86,8 @@ class PollScanner:
                 info = self.fs.stat(self._abs(child))
             except OSError:
                 continue
-            digest = None
-            if not info.is_dir:
-                content = self.fs.read_bytes(self._abs(child))
-                digest = hashlib.sha256(content).hexdigest()
             snapshot.entries[child] = Entry(
                 child, info.is_dir, info.mtime_ns, info.size, info.inode,
-                abs_path=self._abs(child), fs=self.fs, digest=digest)
+                abs_path=self._abs(child), fs=self.fs)
             if info.is_dir:
                 self._walk(child, snapshot)
