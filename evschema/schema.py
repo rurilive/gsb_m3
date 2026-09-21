@@ -87,3 +87,31 @@ ORDER_V1 = Schema(
     required=("order_id", "amount"),
     defaults={"note": ""},
 )
+
+ORDER_V2 = Schema(
+    "order",
+    2,
+    {
+        "order_id": "str",
+        "amount": "int",
+        "note": "str",
+        "channel": "str",
+    },
+    required=("order_id", "amount"),
+    defaults={"note": "", "channel": "unknown"},
+)
+
+ORDER_V3 = Schema(
+    "order",
+    3,
+    {
+        "order_id": "str",
+        "total_cents": "int",
+        "note": "str",
+        "channel": "str",
+        "priority": "str",
+    },
+    required=("order_id", "total_cents"),
+    defaults={"note": "", "channel": "unknown", "priority": "normal"},
+    renames={"amount": "total_cents"},
+)
