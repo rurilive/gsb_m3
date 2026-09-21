@@ -1,6 +1,8 @@
 """waitgraph 现状演示：把生产上踩过的几段场景跑一遍。
 
-带“期望”的行是修好之后该有的样子，跑在现在的代码上多半对不上。
+四段场景都是曾经的事故现场：陈旧报警、幽灵边 + pid 复用、链条上游
+被塞进环成员、十万节点每变必扫整图。现在检测器与 oracle 逐次一致，
+单次变动只做局部遍历。
 """
 
 import time
@@ -35,8 +37,8 @@ def scenario_revived_edge():
     oracle = FullScan(reg)
     print("  全量参考:", {"deadlocked": oracle.deadlocked(),
                         "cycle": oracle.cycle_members()})
-    print("  检测器图里残留的边:", sorted(reg.detector.graph.waits()))
-    print("  期望：两边一致，都不报环")
+    print("  检测器当前的边:", sorted(reg.detector.graph.waits()))
+    print("  期望：两边一致，都不报环；旧边 (WAYNE,job-q,TRISH) 已随 drop 摘除")
 
 
 def scenario_chain_tail():

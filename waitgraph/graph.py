@@ -51,6 +51,28 @@ class WaitGraph:
             self._take_in(holder, pid, resource)
         return len(slots)
 
+    def remove_involving(self, pid):
+        """删掉所有和 pid 沾边的等待边（它等的、别人等它的），返回条数。"""
+        removed = 0
+        slots = self._out.pop(pid, None)
+        if slots:
+            for resource, holder in slots.items():
+                self._take_in(holder, pid, resource)
+                removed += 1
+        incoming = self._in.pop(pid, None)
+        if incoming:
+            for waiter, resources in incoming.items():
+                waiter_slots = self._out.get(waiter)
+                if not waiter_slots:
+                    continue
+                for resource in set(resources):
+                    if waiter_slots.get(resource) == pid:
+                        del waiter_slots[resource]
+                        removed += 1
+                if not waiter_slots:
+                    del self._out[waiter]
+        return removed
+
     def clear(self):
         """清空全图。"""
         self._out.clear()
@@ -76,6 +98,16 @@ class WaitGraph:
         self.visits += 1
         return list(self._out.get(waiter, {}).values())
 
+    def successors(self, waiter):
+        """waiter 出边指向的节点，pid 升序去重。"""
+        self.visits += 1
+        return sorted(set(self._out.get(waiter, {}).values()))
+
+    def predecessors(self, holder):
+        """指向 holder 的等待者，pid 升序去重。"""
+        self.visits += 1
+        return sorted(self._in.get(holder, ()))
+
     def waiters_of(self, holder):
         """谁在等 holder 手里的资源。"""
         return list(self._in.get(holder, ()))
@@ -83,6 +115,15 @@ class WaitGraph:
     def edge_of(self, waiter, resource):
         """waiter 对 resource 记的持有者，没有则 None。"""
         return self._out.get(waiter, {}).get(resource)
+
+    def has_edge(self, waiter, holder):
+        """waiter 有没有一条边指向 holder（任意资源），不计访问。"""
+        return holder in self._out.get(waiter, {}).values()
+
+    def target_count(self, waiter, holder):
+        """waiter 指向 holder 的边有几条（按资源计），不计访问。"""
+        return sum(1 for node in self._out.get(waiter, {}).values()
+                   if node == holder)
 
     def waits(self):
         """全部等待边，元素是 (waiter, resource, holder)。"""
