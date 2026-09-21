@@ -2,12 +2,31 @@
 
 调用方只跟 CachedStore 打交道：读尽量由本地缓存满足，未命中回源并
 把结果放进缓存；写先落到数据源，再让缓存里该 key 的副本失效。
+
+并发约定：同一个 key 同时最多一趟回源（single-flight），并发 miss
+的线程等在 flight 上共享同一个结果，回源期间不持任何锁，写和删不
+会被慢读堵住。回源拿到的是 (值, 修订号)，回填前在条纹锁里核对修订
+号仍是当前版本才写入，慢读因此盖不过期间发生的写或删；回源失败不
+缓存，缓存写失败降级为直连数据源返回。
 """
 
 import threading
 
 from revcache.backend import Backend, TransientError
-from revcache.cache import ValueCache
+from revcache.cache import CacheError, ValueCache
+
+_STRIPES = 64
+
+
+class _Flight:
+    """一趟进行中的回源，同 key 的并发读等在 event 上共享结果。"""
+
+    __slots__ = ("event", "value", "error")
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.value = None
+        self.error = None
 
 
 class CachedStore:
@@ -22,6 +41,8 @@ class CachedStore:
         self.backend = backend
         self.cache = cache
         self._lock = threading.Lock()
+        self._stripes = [threading.Lock() for _ in range(_STRIPES)]
+        self._flights = {}
         self._reads = 0
         self._hits = 0
         self._misses = 0
@@ -29,6 +50,9 @@ class CachedStore:
         self._load_errors = 0
         self._writes = 0
         self._deletes = 0
+
+    def _stripe(self, key):
+        return self._stripes[hash(key) % _STRIPES]
 
     def read(self, key):
         with self._lock:
@@ -43,29 +67,60 @@ class CachedStore:
             return value
         with self._lock:
             self._misses += 1
-        try:
-            value = self.backend.get(key)
-        except KeyError:
-            raise
-        except TransientError:
-            with self._lock:
-                self._load_errors += 1
-            self.cache.put(key, None)
-            raise
         with self._lock:
-            self._loads += 1
-        self.cache.put(key, value)
-        return value
+            flight = self._flights.get(key)
+            if flight is None:
+                flight = _Flight()
+                self._flights[key] = flight
+                leader = True
+            else:
+                leader = False
+        if not leader:
+            # 同 key 已有一趟回源在路上，等它回来共享结果。
+            flight.event.wait()
+            if flight.error is not None:
+                raise flight.error
+            return flight.value
+        try:
+            try:
+                value, rev = self.backend.snapshot(key)
+            except (KeyError, TransientError) as exc:
+                if isinstance(exc, TransientError):
+                    with self._lock:
+                        self._load_errors += 1
+                flight.error = exc
+                raise
+            with self._lock:
+                self._loads += 1
+            # 回源路上 key 可能已被改写或删除；修订号对不上就丢弃这
+            # 份老快照，绝不把旧值回填进缓存。核对与回填跟
+            # write/delete 的失效共用同一把条纹锁，判定和失效之间没
+            # 有窗口。
+            with self._stripe(key):
+                if self.backend.revision(key) == rev:
+                    try:
+                        self.cache.put(key, value)
+                    except CacheError:
+                        pass  # 缓存写不进去时降级为直连，不影响读结果
+            flight.value = value
+            return value
+        finally:
+            # 先摘下 flight 再唤醒等待者，让后来的读自己发起新回源。
+            with self._lock:
+                self._flights.pop(key, None)
+            flight.event.set()
 
     def write(self, key, value):
         self.backend.set(key, value)
-        self.cache.invalidate(key)
+        with self._stripe(key):
+            self.cache.invalidate(key)
         with self._lock:
             self._writes += 1
 
     def delete(self, key):
         existed = self.backend.delete(key)
-        self.cache.invalidate(key)
+        with self._stripe(key):
+            self.cache.invalidate(key)
         with self._lock:
             self._deletes += 1
         return existed
