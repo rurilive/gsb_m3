@@ -5,6 +5,7 @@
 """
 
 from winagg.window import EventCounter
+from winagg.sliding import MultiWindowCounter, WindowedCounter
 
 
 class FakeClock:
@@ -32,10 +33,36 @@ def main():
     print(f"  count={counter.count()} span={counter.span()} "
           f"last_arrival={counter.last_arrival()}")
 
-    # TODO(滑动窗口): 窗口查询、乱序修正与多窗口并行落地后，在这里加一段演示：
-    # 推进假时钟，展示最近 N 秒的窗口和随事件滑出而下降；
-    # 补一条落在窗口内的迟到事件看它被计入，再补一条早于左边界的看它被丢弃或记迟到；
-    # 最后同时挂两个不同长度的窗口，展示短窗口先淘汰、长窗口仍保留。
+    print("=== 滑动窗口：按事件时间推进 ===")
+    win = WindowedCounter(10, clock=clock, late_policy="count")
+    for ts, v in [(100.0, 2), (105.0, 3), (112.0, 1)]:
+        clock.tick(1.0)
+        win.add(ts, v)
+        print(f"  add(ts={ts}, v={v}) -> 窗口={win.current_window()} "
+              f"窗口和={win.window_total()}")
+    print(f"  已关闭窗口产出: {win.outputs()}")
+
+    print("=== 迟到事件 ===")
+    win.add(108.0, 4)   # 水位线已到 112，[100,110) 已关闭，判迟到
+    print(f"  add(ts=108.0, v=4) 被判迟到: late_count={win.late_count()} "
+          f"late_total={win.late_total()}")
+    win.add(115.0, 2)   # 开口窗口内，计入
+    print(f"  add(ts=115.0, v=2) -> 窗口和={win.window_total()}")
+
+    print("=== 多窗口并行 ===")
+    multi = MultiWindowCounter([10, 30], clock=clock)
+    for ts in [200.0, 205.0, 212.0, 225.0]:
+        clock.tick(1.0)
+        multi.add(ts, 1)
+    print(f"  各窗口当前和: {multi.totals()}")
+    print(f"  10s 窗口已关闭产出: {multi.window(10).outputs()}")
+    print(f"  30s 窗口已关闭产出: {multi.window(30).outputs()}")
+
+    print("=== 相邻已关闭窗口合并 ===")
+    w10 = multi.window(10)
+    merged = w10.merge(200.0, 210.0)
+    print(f"  合并 [200,210)+[210,220) -> {merged}")
+    print(f"  合并后产出缓冲: {w10.outputs()}")
 
 
 if __name__ == "__main__":
