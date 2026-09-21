@@ -11,7 +11,7 @@ import time
 class Request:
     """一条排队中的租约请求。"""
 
-    __slots__ = ("ticket", "node", "prio", "arrival", "timeout", "cancelled")
+    __slots__ = ("ticket", "node", "prio", "arrival", "timeout")
 
     def __init__(self, ticket, node, prio, arrival, timeout):
         self.ticket = ticket
@@ -19,7 +19,6 @@ class Request:
         self.prio = prio
         self.arrival = arrival
         self.timeout = timeout
-        self.cancelled = False
 
 
 class FairLease:
@@ -51,10 +50,9 @@ class FairLease:
 
     def cancel(self, ticket):
         """撤销一条尚未发放的请求，返回是否真的撤掉。"""
-        req = self._queue.get(ticket)
-        if req is None:
+        if ticket not in self._queue:
             return False
-        req.cancelled = True
+        del self._queue[ticket]
         return True
 
     def pending(self):
@@ -75,10 +73,16 @@ class FairLease:
     def _live(self, now):
         """清掉已经超时的请求，返回队列里剩下的请求。"""
         for ticket, req in list(self._queue.items()):
-            if req.timeout is not None and (now - req.arrival) >= req.timeout:
+            if req.timeout is not None and (now - req.arrival) > req.timeout:
                 del self._queue[ticket]
         return list(self._queue.values())
 
     def _order(self, now):
         """给出这一轮的服务顺序，等得久的会得到照顾。"""
-        return sorted(self._live(now), key=lambda req: (req.prio, req.node))
+        def key(req):
+            aged = (now - req.arrival) >= self._aging
+            # 老化请求排在所有未老化请求之前，彼此之间按先来后到；
+            # 未老化请求按优先级，同优先级按先来后到（ticket 递增）。
+            return (0, 0, req.ticket) if aged else (1, req.prio, req.ticket)
+
+        return sorted(self._live(now), key=key)
