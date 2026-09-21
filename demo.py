@@ -1,10 +1,17 @@
-"""cmdparse 现状演示。
+"""cmdparse 演示。
 
-四段：空白分词把引号切散的现场、逐行统计、词频、NUL 字节的拒收报错。
-末尾留了新词法落地后的演示位子。
+前四段是老空白分词的现场：引号切散、逐行统计、词频、NUL 拒收。
+后三段是新词法：带坐标词素与高亮区间、错误定位、quote_word 往返。
 """
 
-from cmdparse import CommandDocument, ParseError, summarize, word_frequency
+from cmdparse import (
+    CommandDocument,
+    ParseError,
+    quote_word,
+    summarize,
+    tokenize,
+    word_frequency,
+)
 
 PASTE = "\n".join([
     "cd /srv/app && ls -l",
@@ -42,11 +49,38 @@ def main():
     except ParseError as error:
         print("  " + error.format().replace("\n", "\n  "))
 
-    # TODO(词法改造): tokenize 与 quote_word 落地后在这里补演示：
-    # 1) 引号里的空格、引号内外的转义、行内注释、行尾续行各来一行，
-    #    打每个词素的原文区间，核对区间切出来的字符对不对
-    # 2) 未闭合引号、悬空转义各抓一次 ParseError，把行列与脱字符打出来
-    # 3) 词素用 quote_word 拼回命令行再 tokenize，核对往返一致
+    print()
+    print("=== 新词法：词素、坐标与高亮区间 ===")
+    lexer_source = PASTE
+    for token in document.tokens():
+        start, end = token.start, token.end
+        raw = lexer_source[start.offset:end.offset]
+        kinds = ",".join(segment.kind for segment in token.segments)
+        print("  {:<18} 第{}行{}列-第{}行{}列 原文={!r} 段=[{}]".format(
+            repr(token.text), start.line, start.column,
+            end.line, end.column, raw, kinds))
+
+    print()
+    print("=== 新词法：未闭合引号与悬空转义 ===")
+    for broken in ("cd 'unclosed dir", 'echo "a\\', "line2\n  rm 'x"):
+        try:
+            tokenize(broken)
+        except ParseError as error:
+            print("  输入 {!r}:".format(broken))
+            print("  " + error.format().replace("\n", "\n  "))
+            print()
+
+    print("=== quote_word 往返：拼回去再解析，逐词一致 ===")
+    new_tokens = document.tokens()
+    rebuilt = " ".join(quote_word(token.text) for token in new_tokens)
+    reparsed = tokenize(rebuilt)
+    before = [token.text for token in new_tokens]
+    after = [token.text for token in reparsed]
+    print("  拼回: {}".format(rebuilt))
+    print("  往返一致: {}".format(before == after))
+    print("  空串也活: {} -> {} -> {}".format(
+        repr(""), quote_word(""),
+        [token.text for token in tokenize(quote_word(""))]))
 
 
 if __name__ == "__main__":

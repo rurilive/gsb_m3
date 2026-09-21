@@ -8,6 +8,7 @@
 """
 
 from cmdparse.diagnostics import ParseError
+from cmdparse.lexer import tokenize
 from cmdparse.tokenizer import split_words
 
 
@@ -58,6 +59,15 @@ class CommandDocument:
     def word_count(self):
         """全篇词数，空行不计。"""
         return sum(len(words) for _, words in self.commands())
+
+    def tokens(self):
+        """新词法：把整块命令流连成一片，返回全部词素（Token 列表）。
+
+        走 cmdparse.lexer.tokenize，跨行续行会把词接到一起。未闭合引号、
+        悬空转义在此抛 ParseError（行列按整块文档计）。老的切词方法保持
+        原样不动。
+        """
+        return tokenize(self._text)
 
 
 def _locate(text, index):
