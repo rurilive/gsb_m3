@@ -15,16 +15,33 @@ SID_BYTES = 16
 class Session:
     """One registered session."""
 
-    __slots__ = ("sid", "opened_at", "claims")
+    __slots__ = (
+        "sid",
+        "opened_at",
+        "claims",
+        "refresh_jti",
+        "refresh_exp",
+        "last_rotated_at",
+    )
 
     def __init__(self, sid, opened_at, claims):
         self.sid = sid
         self.opened_at = opened_at
         self.claims = dict(claims)
+        self.refresh_jti = None
+        self.refresh_exp = None
+        self.last_rotated_at = None
 
     def info(self):
         """Snapshot of the record as a plain dict."""
-        return {"sid": self.sid, "opened_at": self.opened_at, "claims": dict(self.claims)}
+        info = {"sid": self.sid, "opened_at": self.opened_at, "claims": dict(self.claims)}
+        if self.refresh_jti is not None:
+            info["refresh"] = {
+                "jti": self.refresh_jti,
+                "exp": self.refresh_exp,
+                "last_rotated_at": self.last_rotated_at,
+            }
+        return info
 
     def __repr__(self):
         return "Session(sid=%r, opened_at=%r)" % (self.sid, self.opened_at)
@@ -41,6 +58,11 @@ class SessionStore:
     def __init__(self, clock):
         self._clock = clock
         self._sessions = {}
+
+    @property
+    def clock(self):
+        """The clock this store reads."""
+        return self._clock
 
     def open(self, claims=None, sid=None):
         """Register a new session and return it.

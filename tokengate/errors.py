@@ -17,6 +17,30 @@ class UnknownKey(TokenError):
     """The header names a key id the ring does not hold."""
 
 
+class InvalidClaims(TokenError):
+    """A well signed token is missing claims or carries the wrong kind."""
+
+
+class TokenExpired(TokenError):
+    """The token's exp is outside the accepted window."""
+
+
+class TokenNotYetValid(TokenError):
+    """The token claims to be valid only in the future, beyond the skew."""
+
+
+class WrongTokenType(TokenError):
+    """An access/refresh token was presented to the wrong entry point."""
+
+
+class SessionRevoked(TokenError):
+    """The session has been revoked; every token for it is dead."""
+
+
+class RefreshReused(TokenError):
+    """The refresh token was already rotated; presenting it again is theft."""
+
+
 class UnknownSession(TokenError, KeyError):
     """No live session is registered under the given id."""
 
