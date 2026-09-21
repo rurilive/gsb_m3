@@ -26,6 +26,8 @@ def demo_resize():
                       step_hook=lambda done, total: steps.append((done, total)))
     for i in range(5):
         m.put("k%d" % i, i)
+    while m.stats()["pending_buckets"]:
+        m.put("k0", m.get("k0"))      # 后续写把剩下的桶分批推完
     st = m.stats()
     print("  迁移回调：", steps)
     print("  resizes=%d migrated_buckets=%d pending_buckets=%d" %
