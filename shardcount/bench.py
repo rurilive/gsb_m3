@@ -9,6 +9,7 @@ import time
 import threading
 
 from shardcount.counter import LockCounter
+from shardcount.sharded import ShardedCounter
 
 DEFAULT_THREADS = (1, 2, 4, 8)
 DEFAULT_SECONDS = 1.0
@@ -54,6 +55,8 @@ def candidates():
     """进比对的实现列表：(名字, 建计数器的可调用对象)。"""
     return [
         ("lock", LockCounter),
+        ("sharded", ShardedCounter),
+        ("sharded-fast", lambda: ShardedCounter(mode="fast")),
     ]
 
 

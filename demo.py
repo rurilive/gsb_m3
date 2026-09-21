@@ -1,12 +1,20 @@
-"""shardcount 现状演示：单锁计数、注册表、并发对拍与快照清零。
+"""shardcount 演示：单锁计数、注册表、并发对拍、快照清零与分片计数。
 
 第一段：LockCounter 与 Registry 的基本用法。
 第二段：4 线程并发打点，和纯算术参考对拍。
 第三段：snapshot 取值清零，前后总量守恒。
-文末留了分片版的演示位子。
+第四段：分片计数器 exact/fast 两种模式与热键摊槽效果。
 """
 
-from shardcount import LockCounter, Registry, drive, expected_totals, make_plan
+from shardcount import (
+    LockCounter,
+    Registry,
+    ShardedCounter,
+    drive,
+    expected_totals,
+    make_plan,
+)
+from shardcount.bench import measure
 
 
 def main():
@@ -40,9 +48,32 @@ def main():
     print("  快照之后读到:", queue.get("queue.depth"))
     print("  再快照一次:", queue.snapshot("queue.depth"))
 
-    # TODO(分片改造): 分片版做完后，在这里补一段演示：用 Registry.open 的
-    # mode 选实现，多线程围着同一个热键打点，跟单锁版对拍总量；打印分片
-    # 布局，以及 bench 量出来的相对单锁倍数。
+    print("=== 分片计数器：热键摊槽 ===")
+    plan = make_plan(seed=7, keys=("hot", "warm", "cold"), threads=8, per_thread=2000)
+    want = expected_totals(plan)
+
+    exact = registry.open("shard.exact", mode="exact")
+    drive(exact, plan)
+    got = {key: exact.get(key) for key in exact.keys()}
+    print("  exact 模式 8 线程压完与纯算术参考一致:", got == want)
+    print("  槽位数:", exact.slot_count, " hot 各槽分量:", exact.slot_values("hot"))
+
+    fast = registry.open("shard.fast", mode="fast")
+    drive(fast, plan)  # 写线程收工时挂账自动落槽
+    got = {key: fast.get(key) for key in fast.keys()}
+    print("  fast 模式收工后精确:", got == want)
+    fast.incr("hot")
+    print("  fast 模式读滞后(真值+1, 读到):", fast.get("hot"), " sync 后:", end=" ")
+    fast.sync()
+    print(fast.get("hot"))
+
+    print("  Registry 老调用照旧:", type(registry.open("api.hits")).__name__)
+
+    seconds = 0.5
+    base = measure(LockCounter, 8, seconds=seconds)
+    shard = measure(ShardedCounter, 8, seconds=seconds)
+    print("  8 线程热键吞吐: 单锁 %.0f ops/s  分片 %.0f ops/s  (%.1fx)"
+          % (base, shard, shard / base))
 
 
 if __name__ == "__main__":

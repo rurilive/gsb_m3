@@ -8,6 +8,7 @@
 import threading
 
 from shardcount.counter import LockCounter
+from shardcount.sharded import ShardedCounter
 
 
 class Registry:
@@ -17,18 +18,35 @@ class Registry:
     """
 
     def __init__(self, factory=None):
-        self._factory = factory or (lambda name: LockCounter())
+        self._factory = factory
         self._lock = threading.Lock()
         self._counters = {}
 
-    def open(self, name):
-        """取 name 对应的计数器，没有就按工厂建一个；同名永远同一份。"""
+    def open(self, name, mode=None):
+        """取 name 对应的计数器，没有就建一个；同名永远同一份。
+
+        mode 选实现：None 或 "lock" 是 LockCounter（老调用照旧），
+        "exact" / "fast" 建 ShardedCounter。只在首次创建时生效，
+        之后同名 open 拿到的都是已建好的那份。自定义 factory 时
+        不接受 mode。
+        """
         with self._lock:
             counter = self._counters.get(name)
             if counter is None:
-                counter = self._factory(name)
+                counter = self._make(name, mode)
                 self._counters[name] = counter
             return counter
+
+    def _make(self, name, mode):
+        if self._factory is not None:
+            if mode is not None:
+                raise ValueError("custom factory does not take mode")
+            return self._factory(name)
+        if mode is None or mode == "lock":
+            return LockCounter()
+        if mode in ("exact", "fast"):
+            return ShardedCounter(mode=mode)
+        raise ValueError("unknown counter mode: %r" % (mode,))
 
     def bind(self, name, counter):
         """把一份现成的计数器挂到 name 上，同名已有的会被换掉。"""
