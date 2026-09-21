@@ -103,10 +103,12 @@ class SortDeduper:
         self._finished = True
         if not self._runs:
             return [record for _, record in self._sorted_dedup(self._buf)]
+        self._spill()
+        runs = self._merge_to_one(self._runs)
         final_path = os.path.join(self._dir, "merged-00000.run")
         self._created.append(final_path)
         self._stats["merge_passes"] += 1
-        merge_runs(self._runs, self._key, final_path, self._guard)
+        merge_runs(runs, self._key, final_path, self._guard)
         out = []
         reader = RunReader(final_path, self._guard)
         try:
@@ -119,6 +121,29 @@ class SortDeduper:
             reader.close()
         self._stats["peak_open_runs"] = self._guard.peak
         return out
+
+    def _merge_to_one(self, runs):
+        """分趟归并，每趟最多同时打开 fd_limit - 1 个输入 run，
+        直到剩下的 run 数一趟就能归并完，返回最后一趟的输入列表。"""
+        fan_in = self._guard.fd_limit - 1
+        merge_seq = 0
+        while len(runs) > fan_in:
+            next_runs = []
+            for i in range(0, len(runs), fan_in):
+                group = runs[i:i + fan_in]
+                if len(group) == 1:
+                    next_runs.append(group[0])
+                    continue
+                out_path = os.path.join(
+                    self._dir, "merge-%05d.run" % merge_seq
+                )
+                merge_seq += 1
+                self._created.append(out_path)
+                self._stats["merge_passes"] += 1
+                merge_runs(group, self._key, out_path, self._guard)
+                next_runs.append(out_path)
+            runs = next_runs
+        return runs
 
     def close(self):
         """删掉这次排序产生的全部 run 文件和临时目录。"""
