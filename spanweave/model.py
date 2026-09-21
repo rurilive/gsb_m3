@@ -56,8 +56,18 @@ class Span:
 
     @property
     def duration_ms(self):
-        """这次调用的耗时，毫秒。"""
-        return self.end_ms - self.start_ms
+        """这次调用的耗时，毫秒。
+
+        end_ms 早于 start_ms 说明采集端时钟回拨过，耗时按 0 计；
+        原始时间戳仍保留在 start_ms/end_ms 上，是否回拨用 clock_skew 判断。
+        """
+        raw = self.end_ms - self.start_ms
+        return raw if raw > 0 else 0
+
+    @property
+    def clock_skew(self):
+        """True 表示这条 span 采到了负耗时（时钟回拨）。"""
+        return self.end_ms < self.start_ms
 
     def __repr__(self):
         return "Span(%s/%s)" % (self.trace_id, self.span_id)
