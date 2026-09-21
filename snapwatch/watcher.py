@@ -1,4 +1,4 @@
-"""Watcher：轮询扫描，比对前后两份快照，把差异变成事件。"""
+"""Watcher：轮询扫描，按静默 debounce 发布净效果事件。"""
 
 import os
 import threading
@@ -40,14 +40,24 @@ class Event:
 class Watcher:
     """盯住一棵目录树，poll() 取一批事件，subscribe() 挂回调。"""
 
-    def __init__(self, root, fs=None, clock=time.time, interval=0.5):
+    def __init__(self, root, fs=None, clock=time.time, interval=0.5,
+                 debounce=0.25, timestamp_granularity=1.0):
+        """debounce 是静默秒数；timestamp_granularity 是盘上 mtime 的
+        最小时间片（秒），同一时间片内只改内容时靠读 digest 兜底；
+        设成 0 表示只信元数据，永不因为时间片而读内容。"""
         self.fs = fs if fs is not None else SysFS()
         self.root = os.path.abspath(root)
         self.clock = clock
         self.interval = interval
+        self.debounce = float(debounce)
+        self.granularity_ns = int(float(timestamp_granularity) * 1e9)
         self.last_poll_at = None
         self._scanner = PollScanner(self.fs, self.root)
         self._snapshot = self._scanner.scan()
+        self._committed = {}
+        self._observed = {}
+        self._pending = {}
+        self._prime_states()
         self._callbacks, self._thread = [], None
         self._stopped = threading.Event()
 
@@ -61,9 +71,10 @@ class Watcher:
 
     def poll(self):
         """再扫一遍，返回这批事件，同时喂给回调。"""
-        self.last_poll_at = self.clock()
+        now = self.clock()
+        self.last_poll_at = now
         fresh = self._scanner.scan()
-        events = self._diff(self._snapshot, fresh)
+        events = self._advance(self._snapshot, fresh, now)
         self._snapshot = fresh
         for event in events:
             for callback in self._callbacks:
@@ -90,27 +101,100 @@ class Watcher:
             self.poll()
             self._stopped.wait(self.interval)
 
-    def _diff(self, prev, now):
-        events = []
-        now_inodes = {e.inode: p for p, e in now.entries.items()}
-        for path in sorted(now.entries):
-            fresh = now.entries[path]
-            old = prev.entries.get(path)
-            if old is None:
-                events.append(Event(CREATED, path, fresh.is_dir))
-            elif old.inode != fresh.inode:
-                # 路径还在但 inode 换了，按旧文件没了、新文件来了记
-                events.append(Event(DELETED, path, old.is_dir))
-                events.append(Event(CREATED, path, fresh.is_dir))
-            elif (old.mtime_ns, old.size) != (fresh.mtime_ns, fresh.size):
-                events.append(Event(MODIFIED, path, fresh.is_dir))
-        for path in sorted(prev.entries):
-            old = prev.entries[path]
-            if path in now.entries:
-                continue
-            dest = now_inodes.get(old.inode)
-            if dest is not None and dest != path:
-                events.append(Event(MOVED, path, old.is_dir, dest))
+    def _prime_states(self):
+        """打底：存量树当作已发布。落在当前热时间片里的文件读一次
+        digest，防止打底后同时间片内只改内容、长度也没变。"""
+        now_ns = int(self.clock() * 1e9)
+        edge = (now_ns - now_ns % self.granularity_ns
+                if self.granularity_ns else now_ns + 1)
+        states = {}
+        for path, entry in self._snapshot.entries.items():
+            if entry.is_dir:
+                digest = None
+            elif entry.mtime_ns >= edge:
+                digest = self._digest(entry)
             else:
-                events.append(Event(DELETED, path, old.is_dir))
-        return events
+                digest = None
+            entry._digest = digest
+            states[path] = self._state_of(entry)
+        self._committed = states
+        self._observed = dict(states)
+
+    def _state_of(self, entry):
+        digest = self._digest(entry) if entry._digest is not None else None
+        return (entry.is_dir, entry.size, entry.mtime_ns, entry.inode,
+                digest)
+
+    @staticmethod
+    def _digest(entry):
+        try:
+            return entry.digest
+        except OSError:
+            return None
+
+    def _in_hot_slice(self, mtime_ns, now):
+        if not self.granularity_ns:
+            return False
+        now_ns = int(now * 1e9)
+        edge = now_ns - now_ns % self.granularity_ns
+        return mtime_ns >= edge
+
+    def _gather(self, prev, fresh, now):
+        """本轮每个可判定路径的净状态：present 是五元组，缺失是 None。
+        读不出来的子树沿用上一轮的判定，不当成删除。"""
+        result = {}
+        for path, entry in fresh.entries.items():
+            old = prev.entries.get(path)
+            previous = self._observed.get(path)
+            if entry.is_dir:
+                entry._digest = None
+            else:
+                metadata_changed = old is None or (
+                    old.is_dir, old.size, old.mtime_ns, old.inode) != (
+                        entry.is_dir, entry.size, entry.mtime_ns,
+                        entry.inode)
+                if metadata_changed:
+                    self._digest(entry)
+                elif self._in_hot_slice(entry.mtime_ns, now):
+                    self._digest(entry)
+                elif (previous is not None
+                      and previous[4] is not None
+                      and (previous[0], previous[1], previous[2],
+                           previous[3])
+                      == (entry.is_dir, entry.size, entry.mtime_ns,
+                          entry.inode)):
+                    entry._digest = previous[4]
+                else:
+                    entry._digest = None
+            result[path] = self._state_of(entry)
+        for path, old in prev.entries.items():
+            if path in result:
+                continue
+            if fresh.is_unreachable(path):
+                result[path] = self._observed.get(
+                    path, self._state_of(old))
+            else:
+                result[path] = None
+        return result
+
+    def _advance(self, prev, fresh, now):
+        final = self._gather(prev, fresh, now)
+        for path, state in final.items():
+            if state == self._observed.get(path):
+                continue
+            self._observed[path] = state
+            if state == self._committed.get(path):
+                self._pending.pop(path, None)
+            else:
+                self._pending[path] = (now, state)
+        ready = [(path, state) for path, (at, state)
+                 in self._pending.items() if now - at >= self.debounce]
+        if not ready:
+            return []
+        pairs = []
+        for path, state in ready:
+            del self._pending[path]
+            pairs.append((path, self._committed.get(path), state))
+            self._committed[path] = state
+        from .reference import publish
+        return publish(pairs)

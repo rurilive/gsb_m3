@@ -1,4 +1,4 @@
-"""快照扫描：走一遍目录树，把每个节点的元数据和内容摘要记下来。"""
+"""快照扫描：走一遍目录树，只记元数据，内容摘要按需现算。"""
 
 import hashlib
 import os
@@ -40,6 +40,11 @@ class Snapshot:
     def __init__(self, root):
         self.root = root
         self.entries = {}
+        self.unreachable = set()
+
+    def mark_unreachable(self, path):
+        """rel 这个目录本轮 stat 得到但读不出名字，子树状态未知。"""
+        self.unreachable.add(path)
 
     def entry(self, path):
         """相对路径对应的 Entry，没有这个路径时抛 KeyError。"""
@@ -50,6 +55,16 @@ class Snapshot:
 
     def __len__(self):
         return len(self.entries)
+
+    def is_unreachable(self, path):
+        """path 是否挂在本轮某个读不出来的目录子树下面。"""
+        rel = path
+        while True:
+            if rel in self.unreachable:
+                return True
+            if not rel:
+                return False
+            rel = rel.rsplit("/", 1)[0] if "/" in rel else ""
 
 
 class PollScanner:
@@ -64,26 +79,30 @@ class PollScanner:
 
     def scan(self):
         snapshot = Snapshot(self.root)
-        self._walk("", snapshot)
+        try:
+            root_names = self.fs.scandir(self.root)
+        except OSError:
+            snapshot.mark_unreachable("")
+            return snapshot
+        for name in sorted(root_names):
+            self._walk(name, snapshot)
         return snapshot
 
     def _walk(self, rel, snapshot):
         try:
+            info = self.fs.stat(self._abs(rel))
+        except OSError:
+            return
+        snapshot.entries[rel] = Entry(
+            rel, info.is_dir, info.mtime_ns, info.size, info.inode,
+            abs_path=self._abs(rel), fs=self.fs)
+        if not info.is_dir:
+            return
+        try:
             names = self.fs.scandir(self._abs(rel))
         except OSError:
+            snapshot.mark_unreachable(rel)
             return
         for name in names:
             child = name if not rel else rel + "/" + name
-            try:
-                info = self.fs.stat(self._abs(child))
-            except OSError:
-                continue
-            digest = None
-            if not info.is_dir:
-                content = self.fs.read_bytes(self._abs(child))
-                digest = hashlib.sha256(content).hexdigest()
-            snapshot.entries[child] = Entry(
-                child, info.is_dir, info.mtime_ns, info.size, info.inode,
-                abs_path=self._abs(child), fs=self.fs, digest=digest)
-            if info.is_dir:
-                self._walk(child, snapshot)
+            self._walk(child, snapshot)
