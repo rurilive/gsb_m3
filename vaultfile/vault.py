@@ -91,3 +91,8 @@ def unseal_file(path, key):
     with open(path, "rb") as handle:
         blob = handle.read()
     return unseal(blob, key)
+
+
+# v2 分块流式入口放在 chunked 模块；那里只在函数体内反向导入本模块，
+# 所以这里模块级导入不会成环。
+from .chunked import rotate_file, seal_stream, unseal_stream  # noqa: E402
