@@ -6,6 +6,7 @@ Ledger 是中心名额账本，管总池、流水与专线状态；Site 是朴�
 """
 
 from slotledger.bench import candidates, measure, round_trips
+from slotledger.buffer import BufferSite
 from slotledger.ledger import Entry, Ledger, LinkDown
 from slotledger.plan import (
     Ideal,
@@ -19,6 +20,7 @@ from slotledger.plan import (
 from slotledger.site import Site
 
 __all__ = [
+    "BufferSite",
     "Entry",
     "Ideal",
     "Ledger",

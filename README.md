@@ -48,3 +48,17 @@ python3 demo.py                          # 账本记账、朴素站点、对拍�
 python3 -m unittest discover -s tests -v # 行为基线测试
 python3 bench.py                         # 并发放名额吞吐对比表
 ```
+
+## 实现说明
+
+- `slotledger/buffer.py` 的 `BufferSite`：一次 `grant` 划一批进本地，多线程
+  加锁扣本地库存，不丢不重，批尽才再跑账本。
+- 批大小按消耗快慢自调：量上一批花多久，往目标补给周期靠，夹在
+  `min_batch`/`max_batch` 之间，平稳期平均每 8 个名额最多一趟账本。
+- 断链就花手里这批，花完如实拒并报 `link_down`；期间不碰账本。
+- 线一恢复，下一次放行前先 `Ledger.report(site, seq, used, returned)`
+  对账：用了多少、剩多少一并报回，对完才领新批。
+- `report` 按站点对账序号幂等，专线重发同一序号不重复动账；报账与在外
+  名额对不上直接拒收。
+- 收工 `close()` 把囤的一次退干净；账本守恒式扩为
+  `remaining + outstanding + used == total`，两边永远对得上。

@@ -9,6 +9,7 @@ measure 让 threads 个线程围着同一个站点放名额，跑 seconds 秒，
 import threading
 import time
 
+from slotledger.buffer import BufferSite
 from slotledger.ledger import Ledger
 from slotledger.site import Site
 
@@ -57,6 +58,7 @@ def candidates():
     """进比对的实现列表：(名字, 建站点的可调用对象)。"""
     return [
         ("naive", lambda ledger, name: Site(ledger, name)),
+        ("buffer", lambda ledger, name: BufferSite(ledger, name)),
     ]
 
 
@@ -65,7 +67,7 @@ def round_trips(ledger, site=None):
     entries = ledger.history()
     if site is not None:
         entries = [entry for entry in entries if entry.site == site]
-    return sum(1 for entry in entries if entry.kind in ("grant", "retire"))
+    return sum(1 for entry in entries if entry.kind in ("grant", "retire", "report"))
 
 
 def main(threads=DEFAULT_THREADS, seconds=DEFAULT_SECONDS, trials=DEFAULT_TRIALS):
