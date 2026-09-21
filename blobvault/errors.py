@@ -14,3 +14,12 @@ class ObjectNotFound(BlobError, KeyError):
 
     def __str__(self):
         return "ObjectNotFound: %r" % (self.args[0] if self.args else None,)
+
+
+class ObjectCorrupted(BlobError):
+    """盘上对象的实际字节和名字登记的内容对不上（被改坏、截断或丢失）。"""
+
+    def __str__(self):
+        if not self.args:
+            return "ObjectCorrupted"
+        return "ObjectCorrupted: %s" % (self.args[0],)
