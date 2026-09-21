@@ -1,34 +1,55 @@
 """vaultfile：本地加密文件格式，纯标准库，无外部依赖。"""
 
-from .format import FMT_V1, HEADER_LEN, MAGIC_V1, FormatError
+from .format import (
+    CHUNK_HEADER_LEN,
+    FMT_V1,
+    FMT_V2,
+    HEADER_LEN,
+    MAGIC_V1,
+    MAGIC_V2,
+    V2_HEADER_LEN,
+    FormatError,
+)
 from .keystream import BadKeyError, derive, keystream, mac, xor_stream
 from .vault import (
     DEFAULT_KEY_VERSION,
     AuthError,
     UnknownKeyError,
     VaultError,
+    DEFAULT_CHUNK_SIZE,
+    rotate_file,
     seal,
     seal_file,
+    seal_stream,
     unseal,
     unseal_file,
+    unseal_stream,
 )
 
 __all__ = [
     "AuthError",
     "BadKeyError",
+    "CHUNK_HEADER_LEN",
+    "DEFAULT_CHUNK_SIZE",
     "DEFAULT_KEY_VERSION",
     "FMT_V1",
+    "FMT_V2",
     "FormatError",
     "HEADER_LEN",
     "MAGIC_V1",
+    "MAGIC_V2",
     "UnknownKeyError",
+    "V2_HEADER_LEN",
     "VaultError",
     "derive",
     "keystream",
     "mac",
+    "rotate_file",
     "seal",
     "seal_file",
+    "seal_stream",
     "unseal",
     "unseal_file",
+    "unseal_stream",
     "xor_stream",
 ]
