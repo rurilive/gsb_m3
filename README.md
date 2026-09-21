@@ -48,3 +48,15 @@ python3 demo.py                          # 账本记账、朴素站点、对拍�
 python3 -m unittest discover -s tests -v # 行为基线测试
 python3 bench.py                         # 并发放名额吞吐对比表
 ```
+
+## 实现说明
+
+`slotledger/buffer.py` 提供 `BufferedSite(ledger, name, batch=8, ...)`：
+一次向账本划一批名额到本地，批内由一把锁并发扣，花完才再划，红线由
+`Ledger.grant` 的原子记账兜底，任何时刻累计放行不越总配额。批量按上一
+批的消耗速度自适应（clock 可注入），下限 8 保证平稳期每放 8 个最多一
+趟账本。专线断开时花手里这批，花完如实拒并报 `link_down`；恢复后下一
+次放行前先经 `Reconciler` 对账，上报带单调请求号，账本侧按（站点， 请
+求号）去重，专线重发两遍只记一次，并核对 已放 + 在手 == outstanding。
+`close()` 收工把囤货一次退净，断链时抛 `LinkDown` 可重试。`tests/`
+test_buffer.py 全程假时钟假链路；`bench.py` 已登记 buffered 实现。

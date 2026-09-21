@@ -10,6 +10,7 @@ import threading
 import time
 
 from slotledger.ledger import Ledger
+from slotledger.buffer import BufferedSite
 from slotledger.site import Site
 
 DEFAULT_THREADS = (1, 2, 4, 8)
@@ -57,6 +58,7 @@ def candidates():
     """进比对的实现列表：(名字, 建站点的可调用对象)。"""
     return [
         ("naive", lambda ledger, name: Site(ledger, name)),
+        ("buffered", lambda ledger, name: BufferedSite(ledger, name)),
     ]
 
 
