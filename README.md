@@ -31,6 +31,21 @@
 `steadyclock/estimator.py` 提供 `OffsetProbe(loopback)`，`probe()` 单发
 估计一次对端与本机的钟差。
 
+## 新口径
+
+- 超时、耗时与本地打戳一律走单调钟，校时回拨与前跳拨不动它们
+- `steadyclock/filter.py` 的 `OffsetFilter`：滑窗内取低时延样本，
+  中位数 + MAD 剔离群，幸存样本取均值平滑
+- `OffsetEstimator(loopback)` 多次测量，每次 `sample()` 交出
+  `Estimate(offset, error_bound, confidence)`
+- `error_bound` 按"真值必落在干净样本 ± 其半时延内"兜底，真的兜得住
+- 收敛后估计锁定不抖；对端真值迁移（重新校时）时自动解锁重收敛
+- 链路有尖峰与错读时估计不被带偏，`confidence` 跟着降
+- 单轮开销定长（窗口定长），上万轮采样不漂、界不涨、耗时不涨
+- 新行为的测试在 `tests/test_offset_estimator.py`，既有基线未动
+- `OffsetProbe` 保留原语义，仅供兼容
+- 演示见 `demo.py` 第五段
+
 ## 目标
 
 见任务描述。约束：

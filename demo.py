@@ -2,9 +2,9 @@
 
 第一段：时间源的两个读法，墙钟与单调钟。
 第二段：Deadline 与 Stopwatch 在正常推进下的口径。
-第三段：机房校时之后，回拨把超时推远，前跳把超时掐断。
+第三段：机房校时之后，回拨与前跳都撼不动单调钟上的超时。
 第四段：一次往返的四个时间戳，单发估计被请求时延整个带偏。
-第五段：预留的偏移估计演示位子（见文末注释）。
+第五段：OffsetEstimator 多次测量、滤波收敛，校时压测纹丝不动。
 """
 
 from steadyclock import (
@@ -12,6 +12,7 @@ from steadyclock import (
     Link,
     Loopback,
     ManualSource,
+    OffsetEstimator,
     OffsetProbe,
     PeerClock,
     Stopwatch,
@@ -53,10 +54,10 @@ def demo_calibration():
     print(f"  正常走 1 秒，剩余 {deadline.remaining():.1f} 秒")
     source.step_wall(-300.0)
     print(f"  回拨 300 秒：剩余 {deadline.remaining():.1f} 秒，到期 "
-          f"{deadline.expired()}，这次探活要假死")
+          f"{deadline.expired()}，单调钟上回拨不存在")
     source.step_wall(600.0)
     print(f"  再前跳 600 秒：剩余 {deadline.remaining():.1f} 秒，到期 "
-          f"{deadline.expired()}，这次又秒断")
+          f"{deadline.expired()}，前跳也掐不断它")
 
 
 def demo_round_trip():
@@ -74,17 +75,48 @@ def demo_round_trip():
           f"请求方向走了多久就偏多少")
 
 
+def demo_offset_estimator():
+    section("偏移估计器")
+    source = ManualSource(wall=1_700_000_000.0)
+    peer = PeerClock(true_offset=-7.5)
+    clean = Link(base_delay=0.02, jitter=0.004, seed=2024)
+    estimator = OffsetEstimator(Loopback(source, peer, clean))
+    for _ in range(40):
+        estimate = estimator.sample()
+    print(f"  干净链路 40 轮：offset {estimate.offset:+.4f}（真值 -7.5），"
+          f"界 ±{estimate.error_bound:.4f} 兜住真值，"
+          f"confidence {estimate.confidence:.2f}")
+
+    dirty = Link(base_delay=0.02, jitter=0.004, spike_chance=0.2,
+                 fault_chance=0.1, seed=99)
+    estimator = OffsetEstimator(Loopback(source, peer, dirty))
+    for _ in range(60):
+        estimate = estimator.sample()
+    print(f"  尖峰 {dirty.spikes} 次、错读 {dirty.faults} 次："
+          f"offset {estimate.offset:+.4f} 不被带偏，"
+          f"confidence 降到 {estimate.confidence:.2f}")
+
+    deadline = Deadline(source, 5.0)
+    held = estimator.sample()
+    source.step_wall(-300.0)
+    estimator.sample()
+    source.step_wall(600.0)
+    estimate = estimator.sample()
+    print(f"  墙钟回拨 300 秒再前跳 600 秒：offset 仍是 "
+          f"{estimate.offset:+.4f}，超时剩余仍是 {deadline.remaining():.1f} 秒")
+
+    for _ in range(10000):
+        estimate = estimator.sample()
+    print(f"  再跑一万轮：offset {estimate.offset:+.4f} 不漂，"
+          f"界 ±{estimate.error_bound:.4f} 不涨")
+
+
 def main():
     demo_time_sources()
     demo_deadline()
     demo_calibration()
     demo_round_trip()
-
-    # TODO(偏移估计): OffsetEstimator 落地后，在这里补一段演示：
-    # 1) 干净链路上采一段，估计贴住真值，error_bound 真的兜得住真值
-    # 2) 链路加延迟尖峰与错误样本，估计不被带偏，confidence 跟着降
-    # 3) 墙钟回拨与前跳期间，超时与估计纹丝不动
-    # 4) 上万轮采样之后估计不漂、单轮耗时不涨
+    demo_offset_estimator()
 
 
 if __name__ == "__main__":

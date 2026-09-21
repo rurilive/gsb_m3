@@ -102,8 +102,8 @@ class Loopback:
         self._service = float(service)
 
     def _local_stamp(self):
-        """本地这一端的读数。"""
-        return self._source.wall()
+        """本地这一端的读数，走单调钟，校时拨不动。"""
+        return self._source.monotonic()
 
     def exchange(self):
         """跑一次往返，返回 (t0, t1, t2, t3) 四个时间戳。"""
