@@ -9,17 +9,18 @@ from .units import to_millis
 
 def floor_bucket(ts_ms, interval_ms):
     """向下对齐：返回不超过 ts_ms 的最大 interval_ms 整数倍。"""
-    return int(ts_ms / interval_ms) * interval_ms
+    return (ts_ms // interval_ms) * interval_ms
 
 
 def ceil_bucket(ts_ms, interval_ms):
     """向上对齐：返回不小于 ts_ms 的最小 interval_ms 整数倍。"""
-    return (ts_ms // interval_ms + 1) * interval_ms
+    floor_value, remainder = divmod(ts_ms, interval_ms)
+    return floor_value * interval_ms if remainder == 0 else (floor_value + 1) * interval_ms
 
 
 def bucket_index(ts_ms, interval_ms):
     """返回 ts_ms 所在桶的序号，序号从 0 起，桶 0 覆盖 [0, interval_ms)。"""
-    return ts_ms // 1000 // (interval_ms // 1000)
+    return ts_ms // interval_ms
 
 
 def bucket_span(start_ms, end_ms, interval_ms):
@@ -27,11 +28,11 @@ def bucket_span(start_ms, end_ms, interval_ms):
 
     start_ms 与 end_ms 相等时返回 0。
     """
-    delta = end_ms - start_ms
-    if delta <= 0:
+    if end_ms <= start_ms:
         return 0
-    whole, remainder = divmod(delta, interval_ms)
-    return whole if remainder == 0 else whole + 1
+    last_bucket = (end_ms - 1) // interval_ms
+    first_bucket = start_ms // interval_ms
+    return last_bucket - first_bucket + 1
 
 
 def align_many(values, interval_ms, unit=None):
@@ -39,4 +40,19 @@ def align_many(values, interval_ms, unit=None):
 
     values 里的时间戳共用同一个 unit 参数，配合报表批量导出使用。
     """
-    return [floor_bucket(to_millis(value, unit), interval_ms) for value in values]
+    if unit == "ms":
+        # 热路径快道：int 毫秒只做纯整数运算；float 回十进制字面值路径。
+        return [
+            (value // interval_ms) * interval_ms
+            if isinstance(value, int)
+            else floor_bucket(to_millis(value, "ms"), interval_ms)
+            for value in values
+        ]
+    if unit == "s":
+        return [
+            ((value * 1000) // interval_ms) * interval_ms
+            if isinstance(value, int)
+            else floor_bucket(to_millis(value, "s"), interval_ms)
+            for value in values
+        ]
+    return [floor_bucket(to_millis(value), interval_ms) for value in values]

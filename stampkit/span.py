@@ -5,8 +5,6 @@
 
 import struct
 
-WIRE_NS_PER_MS = 1_000_000
-
 _UNIT_FACTOR_MS = {
     "ms": 1,
     "s": 1000,
@@ -22,7 +20,7 @@ def duration_between(start_ms, end_ms, unit="ms"):
     unit 取 "ms"、"s"、"min"、"h"、"d" 之一。
     """
     factor = _UNIT_FACTOR_MS[unit]
-    return int((end_ms - start_ms) / factor)
+    return (end_ms - start_ms) // factor
 
 
 def format_duration(ms):
@@ -47,9 +45,9 @@ def format_duration(ms):
 
 def pack_duration(ms):
     """把毫秒跨度打包成归档索引用的 8 字节定长编码。"""
-    return struct.pack("<q", ms * WIRE_NS_PER_MS)
+    return struct.pack("<q", ms)
 
 
 def unpack_duration(blob):
     """把 pack_duration 的产物解回毫秒跨度。"""
-    return struct.unpack("<q", blob)[0] // WIRE_NS_PER_MS
+    return struct.unpack("<q", blob)[0]
