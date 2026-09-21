@@ -29,6 +29,8 @@ print(heap.ids(), heap.stats())
   不依赖堆的其余状态
 - `genheap/errors.py`：`HeapError` / `UnknownObject` / `RootError` /
   `SlotError` / `CollectionError`
+- `genheap/generational.py`：`GenerationalHeap`，年轻代/老年代、写屏障记录集、
+  minor / major 回收与晋升；`BarrierError` 表示写屏障漏记
 
 ## 语义要点
 
@@ -40,14 +42,23 @@ print(heap.ids(), heap.stats())
 - 正收着时再调 `collect` 抛 `CollectionError`；钩子抛的异常原样往上传，
   堆还能继续用，再收一轮就收敛
 
-## 现状
+## 分代回收
 
-回收只有全堆扫一遍这一条路：堆越大每轮的工作量越大，老对象再多也省不掉；
-新对象大多活不过一轮，却要陪着老对象一起被完整标记。
-
-## 目标
-
-见任务描述。约束：现有接口语义与 `tests/` 基线保持不变，纯标准库。
+- `genheap/generational.py` 提供 `GenerationalHeap`，接口与 `ObjectHeap` 一致，
+  另加 `minor_collect()` / `major_collect()` / `generation(oid)`
+- 构造参数 `promote_after`（默认 2）：对象连续 survive 这么多轮回收后晋升老年代；
+  `major_threshold` 非空时 `collect()` 在老年代攒够新增量后自动升级成 major
+- 新对象进年轻代；minor 只从年轻代根和记录集出发，标记绝不走进老年代，
+  扫描量是年轻代的常数倍，与老年代大小无关
+- 老年代新指向年轻代的写入由 store 内置写屏障记入记录集；记账按源对象折叠，
+  反复改引用不膨胀，清空引用即时收缩，major 全量重建
+- 老年代垃圾 minor 不碰，`major_collect()` 全堆标记清除；major 后存活集合
+  与全量标记清除完全一致
+- `GenerationalHeap(verify=True)` 每轮 minor 后复核屏障记账，漏记跨代引用
+  抛 `BarrierError`；生产用 `verify=False`，测试与排障时打开
+- 报告新增 `kind` / `promoted` / `young_scanned` / `old_scanned`，
+  `stats()` 增加 `young` / `old` / `minor_collections` / `major_collections` /
+  `promotions` / `remembered` 等账目
 
 ## 运行
 

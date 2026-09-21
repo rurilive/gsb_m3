@@ -19,3 +19,7 @@ class SlotError(HeapError):
 
 class CollectionError(HeapError):
     """回收相关错误，比如在钩子里递归调用 collect。"""
+
+
+class BarrierError(CollectionError):
+    """写屏障记账坏了：跨代引用漏记，或记录集里有悬空/虚假条目。"""

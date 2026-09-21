@@ -6,7 +6,7 @@
 第四段：钩子里还能继续分配，本轮新建的对象不会被顺手扫掉。
 """
 
-from genheap import ObjectHeap
+from genheap import GenerationalHeap, ObjectHeap
 
 
 def build_page(heap):
@@ -77,9 +77,38 @@ def main():
     print("  本轮:", report, "新建的还在:", born,
           "alive:", other.stats()["alive"])
 
-    # TODO(分代回收): minor_collect / major_collect / generation 落地后，
-    # 在这里补两段：老年代堆大了以后，年轻代回收只扫年轻代那一小片；
-    # 晋升阈值生效后老对象不再跟着年轻代一起被扫。
+    print("=== 分代：晋升阈值让老对象不再陪扫 ===")
+    gen = GenerationalHeap(promote_after=2)
+    anchor = gen.alloc("anchor")
+    gen.add_root(anchor)
+    for round_no in range(1, 4):
+        report = gen.minor_collect()
+        print("  第%d轮 minor: %s, anchor=%s, 代际=%s"
+              % (round_no, report, gen.generation(anchor), gen.generations()))
+
+    print("=== 分代：两万老年代，minor 只扫年轻代那一小片 ===")
+    big = GenerationalHeap(promote_after=1)
+    for _ in range(20000):
+        oid = big.alloc("elder")
+        big.add_root(oid)
+    big.minor_collect()  # 两万个 elder 全部晋升
+    print("  老年代规模:", big.generations()["old"])
+
+    # 老年代对象偶尔指向新对象：写屏障进记录集，minor 靠它保活
+    elder0 = big.ids()[0]
+    for _ in range(300):
+        big.alloc("temp")
+    kept = big.alloc("kept")
+    big.store(elder0, "kept", kept)
+    print("  写屏障记账:", big.remembered()[:1], "（共 %d 个老对象）"
+          % len(big.remembered()))
+    minor_report = big.minor_collect()
+    print("  minor:", minor_report)
+    print("  被老对象挂住的新对象还活着:", big.alive(kept),
+          "记录集大小:", len(big.remembered()))
+    major_report = big.major_collect()
+    print("  major（全堆扫一遍）:", major_report)
+    print("  stats:", big.stats())
 
 
 if __name__ == "__main__":
