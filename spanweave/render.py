@@ -2,10 +2,22 @@
 
 
 def _walk(node, depth=0):
-    """先序深度遍历，逐个产出 (深度, Node)。根的深度是 0。"""
-    yield depth, node
-    for child in node.children:
-        for item in _walk(child, depth + 1):
+    """先序深度遍历，逐个产出 (深度, Node)。根的深度是 0。
+
+    显式栈实现，几千层的深链也不会撞递归深度限制。
+    """
+    stack = [(depth, node)]
+    while stack:
+        current_depth, current = stack.pop()
+        yield current_depth, current
+        for child in reversed(current.children):
+            stack.append((current_depth + 1, child))
+
+
+def _walk_roots(tree):
+    """遍历树上所有节点（不含 unresolved），产出 (深度, Node)。"""
+    for root in tree.roots:
+        for item in _walk(root):
             yield item
 
 
@@ -15,10 +27,9 @@ def render_tree(tree):
     空树渲染成空串；行与行之间用一个换行隔开。
     """
     lines = []
-    for root in tree.roots:
-        for depth, node in _walk(root):
-            lines.append("%s%s (%dms)" % ("  " * depth, node.span.name,
-                                          node.span.duration_ms))
+    for depth, node in _walk_roots(tree):
+        lines.append("%s%s (%dms)" % ("  " * depth, node.span.name,
+                                      node.span.duration_ms))
     return "\n".join(lines)
 
 
@@ -29,12 +40,11 @@ def snapshot(tree):
     用 "-" 占位。
     """
     lines = ["trace %s" % tree.trace_id]
-    for root in tree.roots:
-        for depth, node in _walk(root):
-            span = node.span
-            lines.append("%s%s %s %dms" % ("  " * depth, span.span_id,
-                                           span.service or "-",
-                                           span.duration_ms))
+    for depth, node in _walk_roots(tree):
+        span = node.span
+        lines.append("%s%s %s %dms" % ("  " * depth, span.span_id,
+                                       span.service or "-",
+                                       span.duration_ms))
     return "\n".join(lines)
 
 
@@ -42,22 +52,29 @@ def summary(tree):
     """汇总统计。
 
     返回 dict，键有 spans（树里的 span 数）、roots（根数）、
-    unresolved（没有挂上树的 span 数）、total_ms（耗时合计）、
-    max_depth（最大层深，根的深度是 0）。
+    unresolved（没有挂上树的 span 数）、clock_skew（采出负耗时的
+    条数，含没挂上树的 span）、total_ms（耗时合计）、max_depth
+    （最大层深，根的深度是 0）。
     """
     spans = 0
     total_ms = 0
     max_depth = 0
-    for root in tree.roots:
-        for depth, node in _walk(root):
-            spans += 1
-            total_ms += node.span.duration_ms
-            if depth > max_depth:
-                max_depth = depth
+    clock_skew = 0
+    for depth, node in _walk_roots(tree):
+        spans += 1
+        total_ms += node.span.duration_ms
+        if node.span.clock_skew:
+            clock_skew += 1
+        if depth > max_depth:
+            max_depth = depth
+    for node in tree.unresolved:
+        if node.span.clock_skew:
+            clock_skew += 1
     return {
         "spans": spans,
         "roots": len(tree.roots),
         "unresolved": len(tree.unresolved),
+        "clock_skew": clock_skew,
         "total_ms": total_ms,
         "max_depth": max_depth,
     }

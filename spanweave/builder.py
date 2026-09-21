@@ -28,48 +28,65 @@ class Tree:
         self.unresolved = unresolved
 
 
-def _nearest_previous(nodes, node):
-    """同 trace 里开始时间不晚于 node 的最近一条，排除自身。"""
-    best = None
-    for other in nodes:
-        if other is node or other.span.trace_id != node.span.trace_id:
-            continue
-        if other.span.start_ms > node.span.start_ms:
-            continue
-        if best is None or other.span.start_ms > best.span.start_ms:
-            best = other
-    return best
+def _order_key(node):
+    """兄弟/根/未决 span 的统一排序键：先按开始时间，再按 span_id。"""
+    return (node.span.start_ms, node.span.span_id)
+
+
+def _reaches_root(nodes, state, start):
+    """沿 parent_id 向上走，判断 start 能不能挂到一个根上。
+
+    走到 parent_id 为空的 span 才算成功；父缺失（跨 trace 同样查不到）、
+    指向自身或成环都算失败。结果记忆在 state 里，每个 Node 至多走一遍。
+    """
+    path = []
+    on_path = set()
+    current = start
+    verdict = None
+    while current is not None:
+        if current in state:
+            verdict = state[current]
+            break
+        if current in on_path:
+            verdict = False
+            break
+        path.append(current)
+        on_path.add(current)
+        parent_id = current.span.parent_id
+        if parent_id is None:
+            current = None
+            verdict = True
+        else:
+            current = nodes.get(parent_id)
+            if current is None:
+                verdict = False
+    for node in path:
+        state[node] = verdict
+    return verdict
 
 
 def build_tree(trace_id, spans):
     """把一条 trace 的 span 挂成 Tree。"""
-    nodes = [Node(span) for span in spans]
+    nodes = {span.span_id: Node(span) for span in spans}
 
-    def node_of(span_id):
-        for node in nodes:
-            if node.span.span_id == span_id:
-                return node
-        return None
-
+    state = {}  # Node -> True（能挂到根）/ False（父缺失或成环）
     roots = []
-    for node in nodes:
-        span = node.span
-        parent = None
-        if span.parent_id is not None:
-            parent = node_of(span.parent_id)
-        if parent is None:
-            # 父不在数据里，或者压根没有 parent_id（跨进程上报常丢这个字段）：
-            # 按开始时间就近挂到同 trace 里前一条 span 上，别让子树浮在根上
-            parent = _nearest_previous(nodes, node)
-        if parent is None:
-            roots.append(node)
+    unresolved = []
+    for node in nodes.values():
+        if _reaches_root(nodes, state, node):
+            if node.span.parent_id is None:
+                roots.append(node)
+            else:
+                nodes[node.span.parent_id].children.append(node)
         else:
-            parent.children.append(node)
+            unresolved.append(node)
 
-    for node in nodes:
-        node.children.sort(key=lambda child: child.span.start_ms)
+    roots.sort(key=_order_key)
+    unresolved.sort(key=_order_key)
+    for node in nodes.values():
+        node.children.sort(key=_order_key)
 
-    return Tree(trace_id, roots, [])
+    return Tree(trace_id, roots, unresolved)
 
 
 def build_trees(by_trace):
