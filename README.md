@@ -18,6 +18,11 @@
   接口约定与 `bfs_path` 相同，结果可复现；没有启发式，图大时慢，只适合当对拍参考
 - `gridnav/maps.py` 提供 `open_map`、`random_map(width, height, density, seed, protected)`、
   `pillared_map`；随机地图只由参数与种子决定，跨进程一致
+- `gridnav/astar.py` 提供 `AStarPlanner(grid)`：`plan(start, goal)` 用可采纳的对角线
+  启发式（整体乘 `HEURISTIC_SCALE = 1.0 - 1e-12` 下压，防止浮点舍入破坏可采纳性）跑
+  A*，开放列表为堆，接口约定与 `dijkstra_path` 相同；`replan(start, goal)` 在
+  `set_blocked` 后增量修路——没压到缓存路径时零展开复用，压断时只从断点局部重搜，
+  `stats()` 的累计展开数可印证
 
 ## 目标
 

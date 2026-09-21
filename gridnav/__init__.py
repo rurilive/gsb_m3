@@ -1,5 +1,6 @@
 """gridnav: 栅格地图上的基础寻路。"""
 
+from gridnav.astar import AStarPlanner
 from gridnav.grid import DIRECTIONS, SQRT2, Grid, GridError
 from gridnav.maps import open_map, pillared_map, random_map
 from gridnav.paths import PathError, path_cost, validate_path
@@ -7,6 +8,7 @@ from gridnav.reference import dijkstra_path
 from gridnav.search import bfs_path
 
 __all__ = [
+    "AStarPlanner",
     "DIRECTIONS",
     "SQRT2",
     "Grid",
