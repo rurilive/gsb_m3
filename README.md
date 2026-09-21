@@ -32,3 +32,11 @@
 python3 demo.py                          # 按批推送演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 水位存哪：`WatermarkStore(path)` 把每个确认水位以 `RX1 seq at 长度 payload CRC32` 行追加到同一文件，`flush+fsync` 落盘，保留全部历史点，重启先读最后一个完好点。
+- 半截怎么判废：读盘逐行校验魔数、列数、payload 长度与 CRC32，任一不符或序号回退即跳过；半截行没有换行/校验不过，绝不会成为有效水位。
+- 先确认后落盘：`StreamRunner` 先 `sink.push()` 拿到下游收妥后的水位，再 `store.save()`，故盘上水位永不超过实际已推位置。
+- 丢弃怎么计数：`MemorySink` 对 `seq <= watermark` 的重复或乱序迟到记录丢弃，`discarded`/`stats()["discarded"]` 计数，水位只增不减。
+- 阻塞怎么计数：`StreamRunner(max_buffered=n)` 用有界队列隔在取数与推送之间，队列满时 `put` 阻塞、停止从来源取，阻塞次数计入 `progress()["blocked"]`。
