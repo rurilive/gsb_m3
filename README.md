@@ -37,14 +37,15 @@ print(buf.text(), buf.mark("caret"), buf.revision)
 
 ## 现状
 
-`Rope` 还只是退化形态：所有正文塞在一个叶子里，`insert` / `delete` 把整串重拼，
-`slice` / `concat` 把整串抄一份。所以叶子个数永远是 1，编辑后叶子 id 全部换掉，
-`stats()["copied"]` 与 `TextDoc` 一样随正文长度线性上涨，`locate` 也谈不上走树。
-正文到几十 MB 后，一次编辑要几百毫秒。
+`Rope` 是真正的 rope：`Leaf`（不超过 `MAX_LEAF` 个字符）拼成 AVL 平衡树，
+`Branch` 缓存子树长度与树高。`insert` / `delete` / `slice` / `concat` 都是
+路径拷贝：只重造受影响路径上的节点，没碰到的叶子原对象留着（id 不变），
+新 rope 与源 rope 共享这些叶子、互相独立。`locate` 顺一条路径走到底，
+`iter_range` 顺树按叶子吐块、不物化整段。顺序灌十万个小块树深也只有十几，
+单次编辑的拷贝量与耗时不随正文长度涨（2 MB 正文上单字符插入约几微秒，
+`copied` 只有几千，而 `TextDoc` 要抄整串）。
 
-## 目标
-
-见任务描述。约束：`TextDoc` 与 `TextBuffer` 的既有接口、现有 `tests/` 的行为
+约束：`TextDoc` 与 `TextBuffer` 的既有接口、现有 `tests/` 的行为
 一字不变，纯标准库。
 
 ## 运行
@@ -53,3 +54,6 @@ print(buf.text(), buf.mark("caret"), buf.revision)
 python3 demo.py                           # 看看现状：叶子复用、标记、耗时
 python3 -m unittest discover -s tests -v  # 行为基线
 ```
+
+`tests/test_rope_structure.py` 是 rope 的结构验收：按叶子 id 统计复用率、
+树高上限、拷贝量对照 `TextDoc`、迭代内存峰值、随机编辑序列逐字符对拍。

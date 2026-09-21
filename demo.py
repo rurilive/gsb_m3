@@ -24,16 +24,15 @@ def show_doc_edits():
 
 
 def show_rope_edits():
-    print("=== Rope：现在只有一个叶子 ===")
-    rope = Rope.from_text(fill(200))
+    print("=== Rope：平衡树，编辑只重造一条路径 ===")
+    rope = Rope.from_text(fill(20000))
     before = rope.leaf_ids()
-    rope.insert(100, "光标的插入")
+    rope.insert(10000, "光标的插入")
     after = rope.leaf_ids()
     kept = [i for i in after if i in set(before)]
     print("  长度 %d，leaves %d，depth %d" % (len(rope), rope.stats()["leaves"], rope.depth()))
-    print("  编辑前叶子 %s" % before)
-    print("  编辑后叶子 %s（一个都没留住，复用率 0）" % after)
-    print("  复用的叶子: %s" % (kept or "无"))
+    print("  编辑前叶子 %d 个，编辑后 %d 个，复用 %d 个（复用率 %.0f%%）" % (
+        len(before), len(after), len(kept), 100.0 * len(kept) / max(len(after), 1)))
     leaf, off = rope.locate(5)
     print("  locate(5) 落在叶子偏移 %d，该叶子长 %d" % (off, leaf.length))
 
@@ -50,7 +49,7 @@ def show_buffer():
 
 
 def show_timing():
-    print("=== 正文一大，编辑就卡 ===")
+    print("=== 正文一大，TextDoc 就卡；Rope 单次编辑耗时不变 ===")
     text = fill(2 * 1024 * 1024)
     for name, make in (("TextDoc", TextDoc), ("Rope", Rope.from_text)):
         doc = make(text)
@@ -59,7 +58,23 @@ def show_timing():
             doc.insert(i * 1000, "x")
         print("  %-7s 2 MB 正文上 5 次单字符插入：%.3f 秒，copied %d" % (
             name, time.perf_counter() - start, doc.stats()["copied"]))
-    # TODO(rope 结构): 平衡树落地后在这里补上顺序插十万个小块的树高与单次编辑耗时。
+
+
+def show_small_inserts():
+    print("=== 顺序灌十万个一两个字符的小块 ===")
+    rope = Rope.from_text("")
+    start = time.perf_counter()
+    for i in range(100000):
+        rope.insert(len(rope), "ab" if i % 2 else "c")
+    elapsed = time.perf_counter() - start
+    stats = rope.stats()
+    print("  长度 %d，leaves %d，depth %d（上限 64），总耗时 %.3f 秒" % (
+        len(rope), stats["leaves"], stats["depth"], elapsed))
+    before = rope.stats()["copied"]
+    tick = time.perf_counter()
+    rope.insert(len(rope) // 2, "x")
+    print("  正文 %d 字符时单次插入：%.6f 秒，copied 增加 %d（不随正文长度涨）" % (
+        len(rope), time.perf_counter() - tick, rope.stats()["copied"] - before))
 
 
 def main():
@@ -67,6 +82,7 @@ def main():
     show_rope_edits()
     show_buffer()
     show_timing()
+    show_small_inserts()
 
 
 if __name__ == "__main__":

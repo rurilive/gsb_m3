@@ -1,9 +1,11 @@
-"""rope：叶子块拼起来的文本结构，眼下只跑得动退化的单叶子形态。
+"""rope：叶子块拼成 AVL 平衡树的文本结构。
 
-轮廓已经画好：Leaf 是一段只读正文，Branch 缓存子树长度。但 Rope 把整段正文
-塞进一个叶子，insert / delete 整串重造，concat / slice 也只是整串抄一份：
-结构上叫 rope，性能上还是 TextDoc，没碰到的叶子一个都留不下，叶子个数永远是 1。
-位置一律是字符下标（多字节字符算一个位置），边界语义见任务描述与 TextDoc。
+Leaf 是一段只读正文（不超过 MAX_LEAF 个字符），Branch 缓存子树长度与树高。
+所有编辑都是路径拷贝：insert / delete / slice / concat 只重造受影响路径上的
+节点，没碰到的叶子原对象留着，id 不变；新 rope 和源 rope 共享这些叶子，
+两边各自独立，改一边不牵动另一边。拼接与再平衡走 AVL 的 join / split，
+树高稳定在 O(log 叶子数)，顺序灌十万个小块深度也远低于 64。
+位置一律是字符下标（多字节字符算一个位置），边界语义与 TextDoc 一致。
 """
 
 from ropepad.errors import RangeError
@@ -48,9 +50,9 @@ class Leaf(Node):
 
 
 class Branch(Node):
-    """内部节点：左右子树加一段缓存长度。"""
+    """内部节点：左右子树，缓存子树长度与树高（AVL 不变式靠它维持）。"""
 
-    __slots__ = ("_left", "_right", "_length")
+    __slots__ = ("_left", "_right", "_length", "_height")
 
     def __init__(self, left, right):
         if left is None or right is None:
@@ -58,6 +60,7 @@ class Branch(Node):
         self._left = left
         self._right = right
         self._length = left.length + right.length
+        self._height = max(_height(left), _height(right)) + 1
 
     @property
     def left(self):
@@ -70,6 +73,152 @@ class Branch(Node):
     @property
     def length(self):
         return self._length
+
+    @property
+    def height(self):
+        return self._height
+
+
+def _height(node):
+    """节点高度：叶子算 1，空树算 0。"""
+    if node is None:
+        return 0
+    return node.height if isinstance(node, Branch) else 1
+
+
+def _join(left, right):
+    """AVL 拼接：left 的文档序整体在 right 之前，合成一棵平衡树。
+
+    两棵树高度差任意都成立；只重造两侧脊柱上的 O(|高差|) 个分支节点，
+    叶子一个不动。两边都可以是 None。
+    """
+    if left is None:
+        return right
+    if right is None:
+        return left
+    lh, rh = _height(left), _height(right)
+    if lh > rh + 1:
+        return _balance(left.left, _join(left.right, right))
+    if rh > lh + 1:
+        return _balance(_join(left, right.left), right.right)
+    return Branch(left, right)
+
+
+def _balance(left, right):
+    """把左右两棵平衡子树装到一个分支下，高度差不超过 2 时单/双旋转复原。"""
+    lh, rh = _height(left), _height(right)
+    if lh > rh + 1:
+        if _height(left.left) >= _height(left.right):
+            return Branch(left.left, Branch(left.right, right))
+        mid = left.right
+        return Branch(Branch(left.left, mid.left), Branch(mid.right, right))
+    if rh > lh + 1:
+        if _height(right.right) >= _height(right.left):
+            return Branch(Branch(left, right.left), right.right)
+        mid = right.left
+        return Branch(Branch(left, mid.left), Branch(mid.right, right.right))
+    return Branch(left, right)
+
+
+def _balanced(leaves):
+    """把一串叶子对折成平衡树；空列表返回 None。"""
+    if not leaves:
+        return None
+    if len(leaves) == 1:
+        return leaves[0]
+    mid = len(leaves) // 2
+    return Branch(_balanced(leaves[:mid]), _balanced(leaves[mid:]))
+
+
+def _chunk_leaves(text):
+    """把正文切成不超过 MAX_LEAF 的叶子串。"""
+    return [Leaf(text[i:i + MAX_LEAF]) for i in range(0, len(text), MAX_LEAF)]
+
+
+def _splice_leaf(leaf, pos, chunks):
+    """在叶子内部 pos 处塞进 chunks（Leaf 列表），返回 (子树, copied)。
+
+    优先并界：插入内容能并进左半或右半就不新开叶子，保持叶子致密。
+    边界上整片复用原串（CPython 全切片返回原对象）时不计入 copied。
+    """
+    text = leaf.text
+    pieces = [c.text for c in chunks]
+    if pos > 0:
+        head = text[:pos]
+        if len(head) + len(pieces[0]) <= MAX_LEAF:
+            pieces[0] = head + pieces[0]
+        else:
+            pieces.insert(0, head)
+    if pos < len(text):
+        tail = text[pos:]
+        if len(pieces[-1]) + len(tail) <= MAX_LEAF:
+            pieces[-1] = pieces[-1] + tail
+        else:
+            pieces.append(tail)
+    copied = 0
+    leaves = []
+    for piece in pieces:
+        if piece is not text:
+            copied += len(piece)
+        leaves.append(Leaf(piece))
+    return _balanced(leaves), copied
+
+
+def _insert_at(node, pos, chunks):
+    """把 chunks（Leaf 列表）插进子树 pos 处，返回 (新子树, copied)。"""
+    if isinstance(node, Leaf):
+        return _splice_leaf(node, pos, chunks)
+    if pos <= node.left.length:
+        new, copied = _insert_at(node.left, pos, chunks)
+        return _join(new, node.right), copied
+    new, copied = _insert_at(node.right, pos - node.left.length, chunks)
+    return _join(node.left, new), copied
+
+
+def _delete_span(node, start, end):
+    """删掉子树里 [start, end) 这段，返回 (新子树或 None, copied)。
+
+    整棵被盖住的子树直接丢弃（copied 为 0），只有被部分删到的叶子
+    会写出新字符。
+    """
+    if start <= 0 and end >= node.length:
+        return None, 0
+    if isinstance(node, Leaf):
+        kept = node.text[:start] + node.text[end:]
+        return Leaf(kept), len(kept)
+    left_len = node.left.length
+    left, right, copied = node.left, node.right, 0
+    if start < left_len:
+        left, c = _delete_span(node.left, start, min(end, left_len))
+        copied += c
+    if end > left_len:
+        right, c = _delete_span(node.right, max(start, left_len) - left_len,
+                                end - left_len)
+        copied += c
+    return _join(left, right), copied
+
+
+def _slice_out(node, start, end):
+    """取出子树里 [start, end) 这段做成新树，源树不动。
+
+    整棵被覆盖的子树直接共享（copied 为 0），只有被切到边界的叶子
+    会写出新字符。
+    """
+    if start <= 0 and end >= node.length:
+        return node, 0
+    if isinstance(node, Leaf):
+        piece = node.text[start:end]
+        return (Leaf(piece), len(piece)) if piece else (None, 0)
+    left_len = node.left.length
+    left, right, copied = None, None, 0
+    if start < left_len:
+        left, c = _slice_out(node.left, start, min(end, left_len))
+        copied += c
+    if end > left_len:
+        right, c = _slice_out(node.right, max(start, left_len) - left_len,
+                              end - left_len)
+        copied += c
+    return _join(left, right), copied
 
 
 class Rope:
@@ -88,7 +237,7 @@ class Rope:
             raise TypeError("正文必须是 str")
         if not text:
             return cls()
-        return cls(Leaf(text))
+        return cls(_balanced(_chunk_leaves(text)))
 
     def __len__(self):
         return self._root.length if self._root is not None else 0
@@ -124,8 +273,14 @@ class Rope:
             raise RangeError("定位越界: %d" % pos)
         if self._root is None:
             return (None, 0)
-        # 退化形态：只有一个叶子，位置就是这个叶子里的小偏移。
-        return (self._root, pos)
+        node = self._root
+        while isinstance(node, Branch):
+            if pos < node.left.length:
+                node = node.left
+            else:
+                pos -= node.left.length
+                node = node.right
+        return (node, pos)
 
     def text(self):
         """物化整段正文。验收和调试用，编辑路径不该调。"""
@@ -150,15 +305,16 @@ class Rope:
         """取 [start, end) 做成新的 Rope，本对象不动，越界一律 RangeError。
         口径同 TextDoc.slice；副本里没改动的叶子该和本体共着用，两边各自独立。"""
         self._check_span(start, end)
-        piece = self.text()[start:end]
-        return Rope(Leaf(piece) if piece else None, copied=len(piece))
+        if start == end:
+            return Rope()
+        root, copied = _slice_out(self._root, start, end)
+        return Rope(root, copied=copied)
 
     def concat(self, other):
         """接在 other 后面，返回新的 Rope，两条老的都别动。"""
         if not isinstance(other, Rope):
             raise TypeError("只能和 Rope 拼接")
-        text = self.text() + other.text()
-        return Rope(Leaf(text) if text else None, copied=len(text))
+        return Rope(_join(self._root, other._root))
 
     def insert(self, pos, text):
         """在 pos 处插入 text。pos 取 0 到长度（含）之外都抛 RangeError。"""
@@ -169,9 +325,12 @@ class Rope:
             raise RangeError("插入位置越界: %d" % pos)
         if not text:
             return
-        merged = self.text()[:pos] + text + self.text()[pos:]
-        self._root = Leaf(merged)
-        self._copied += len(merged)
+        if self._root is None:
+            self._root = _balanced(_chunk_leaves(text))
+            self._copied += len(text)
+            return
+        self._root, copied = _insert_at(self._root, pos, _chunk_leaves(text))
+        self._copied += copied
 
     def delete(self, start, count):
         """删掉 [start, start+count) 这段。count 为 0 是空操作，什么都不动。"""
@@ -180,22 +339,48 @@ class Rope:
             raise RangeError("删除区间越界: %s" % ((start, count),))
         if count == 0:
             return
-        merged = self.text()[:start] + self.text()[start + count:]
-        self._root = Leaf(merged) if merged else None
-        self._copied += len(merged)
+        self._root, copied = _delete_span(self._root, start, start + count)
+        self._copied += copied
 
     def iter_range(self, start, end):
         """按块迭代 [start, end) 的正文，每块一个 str，块长不超过 MAX_LEAF。
         start 负数或超过长度抛 RangeError，end 小于 start 也抛，end 超过长度截到
         末尾（这点和 slice 不同，口径照 TextDoc）；参数在取迭代器时当场校验，分块
-        边界不作承诺，拼起来的内容必须一致。现在是先拼出整段再切，得改成顺树走。"""
+        边界不作承诺，拼起来的内容必须一致。顺树按叶子吐块，不拼整段。"""
         end = self._check_range(start, end)
         return self._chunks(start, end)
 
     def _chunks(self, start, end):
-        text = self.text()[start:end]
-        for i in range(0, len(text), MAX_LEAF):
-            yield text[i:i + MAX_LEAF]
+        """顺着树按叶子吐块，不拼整段；整片叶子直接原对象交出去，不抄。"""
+        remaining = end - start
+        for leaf, offset in self._leaf_stream(start):
+            if remaining <= 0:
+                break
+            piece = leaf.text[offset:offset + remaining]
+            yield piece
+            remaining -= len(piece)
+
+    def _leaf_stream(self, pos):
+        """从 pos 所在的叶子起按文档序逐个吐 (leaf, 叶内偏移)，显式栈。"""
+        stack = []
+        node = self._root
+        while node is not None:
+            while isinstance(node, Branch):
+                if pos < node.left.length:
+                    stack.append((node, False))
+                    node = node.left
+                else:
+                    pos -= node.left.length
+                    stack.append((node, True))
+                    node = node.right
+            yield node, pos
+            pos = 0
+            node = None
+            while stack:
+                parent, went_right = stack.pop()
+                if not went_right:
+                    node = parent.right
+                    break
 
     def _leaves(self):
         """按文档序把叶子走一遍，显式栈，树再深也不炸。"""
