@@ -4,12 +4,15 @@
 第二段：逐字节编码与解码，含多字节字符与随机二进制数据。
 第三段：与朴素逐字节参考实现对拍。
 第四段：段频次统计。
-第五段：预留的合并学习演示位子（见文末注释）。
+第五段：BPE 合并学习与词表存盘往返。
 """
 
+import os
 import random
+import tempfile
+import time
 
-from bytetok import Tokenizer, Vocabulary
+from bytetok import Tokenizer, Vocabulary, train_bpe
 from bytetok.reference import naive_decode, naive_encode
 from bytetok.units import segment_frequencies
 
@@ -51,10 +54,42 @@ def main():
     for segment, count in segment_frequencies(data)[:5]:
         print(f"  {segment!r} x {count}")
 
-    # TODO(合并学习): train_bpe 落地后，在这里补三段演示：
-    # 1) 拿一段语料训练到几千词表，打印合并条数与训练耗时
-    # 2) 同一段文本训练前后 id 序列长度对比
-    # 3) 学到的词表存盘再读回，编码结果与训练完的实例一致
+    print()
+    print("=== BPE 合并学习 ===")
+    train_rng = random.Random(2026)
+    word_pool = [
+        "".join(train_rng.choice("abcdefghijklmnop") for _ in range(train_rng.randrange(2, 8)))
+        for _ in range(8000)
+    ]
+    sentences = [
+        " ".join(train_rng.choice(word_pool) for _ in range(6))
+        + train_rng.choice([".", ",", ";", "?", "!"])
+        for _ in range(8000)
+    ]
+    corpus = " ".join(sentences).encode("utf-8")
+    bpe_vocab = Vocabulary()
+    bpe_vocab.add_special("<pad>")
+    started = time.perf_counter()
+    merges = train_bpe(corpus, bpe_vocab, 2800)
+    elapsed = time.perf_counter() - started
+    print(f"  语料 {len(corpus)} 字节，学到 {len(merges)} 条合并，词表 {bpe_vocab.size()}，耗时 {elapsed:.2f}s")
+
+    bpe_tokenizer = Tokenizer(bpe_vocab)
+    probe = "<pad> " + " ".join(word_pool[:20])
+    probe_data = probe.encode("utf-8")
+    before = naive_encode(bpe_vocab, probe_data)
+    after = bpe_tokenizer.encode(probe)
+    print(f"  同段文本：逐字节 {len(before)} 个 id -> BPE {len(after)} 个 id")
+    print(f"  特殊标记 <pad> 整段保留：首个 id 为 {after[0]}，解码含 <pad>: {bpe_vocab.token(after[0]) == b'<pad>'}")
+    print(f"  BPE 往返逐字节相等: {bpe_tokenizer.decode(after) == probe_data}")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "vocab.txt")
+        bpe_vocab.save(path)
+        loaded = Vocabulary.load(path)
+        loaded_tokenizer = Tokenizer(loaded)
+        same = loaded_tokenizer.encode(probe) == after
+        print(f"  save/load 后词表大小 {loaded.size()}、合并 {len(loaded.merges())} 条，编码一致: {same}")
 
 
 if __name__ == "__main__":
