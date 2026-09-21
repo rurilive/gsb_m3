@@ -2,7 +2,8 @@
 
 巡检脚本里到处在用：Deadline 定一个超时秒数，循环里反复问还剩多久、
 到没到；Stopwatch 量一段动作花了多久。两个都从注入的 TimeSource 读数，
-起点在构造时记下。
+起点在构造时记下。起止差一律走单调钟，机房校时把墙钟往前拨往回拨都
+动不了这里的口径。
 """
 
 
@@ -14,7 +15,7 @@ class Deadline:
             raise ValueError("超时上限不能为负")
         self._source = source
         self._timeout = float(timeout)
-        self._start = self._source.wall()
+        self._start = self._source.monotonic()
 
     @property
     def timeout(self):
@@ -22,7 +23,7 @@ class Deadline:
 
     def elapsed(self):
         """从起算到现在过了多久。"""
-        return self._source.wall() - self._start
+        return self._source.monotonic() - self._start
 
     def remaining(self):
         """还剩多少秒，可能为负。"""
@@ -38,7 +39,7 @@ class Deadline:
 
     def reset(self):
         """重新起算。"""
-        self._start = self._source.wall()
+        self._start = self._source.monotonic()
 
 
 class Stopwatch:
@@ -46,12 +47,12 @@ class Stopwatch:
 
     def __init__(self, source):
         self._source = source
-        self._start = self._source.wall()
+        self._start = self._source.monotonic()
 
     def elapsed(self):
         """从起算到现在过了多久。"""
-        return self._source.wall() - self._start
+        return self._source.monotonic() - self._start
 
     def restart(self):
         """从现在重新起算。"""
-        self._start = self._source.wall()
+        self._start = self._source.monotonic()

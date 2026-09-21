@@ -2,9 +2,9 @@
 
 第一段：时间源的两个读法，墙钟与单调钟。
 第二段：Deadline 与 Stopwatch 在正常推进下的口径。
-第三段：机房校时之后，回拨把超时推远，前跳把超时掐断。
+第三段：机房校时之后，回拨与前跳都动不了超时口径。
 第四段：一次往返的四个时间戳，单发估计被请求时延整个带偏。
-第五段：预留的偏移估计演示位子（见文末注释）。
+第五段：OffsetEstimator 多次测量，干净与脏链路下的收敛与稳健。
 """
 
 from steadyclock import (
@@ -12,6 +12,7 @@ from steadyclock import (
     Link,
     Loopback,
     ManualSource,
+    OffsetEstimator,
     OffsetProbe,
     PeerClock,
     Stopwatch,
@@ -53,10 +54,10 @@ def demo_calibration():
     print(f"  正常走 1 秒，剩余 {deadline.remaining():.1f} 秒")
     source.step_wall(-300.0)
     print(f"  回拨 300 秒：剩余 {deadline.remaining():.1f} 秒，到期 "
-          f"{deadline.expired()}，这次探活要假死")
+          f"{deadline.expired()}，口径走单调钟，纹丝不动")
     source.step_wall(600.0)
     print(f"  再前跳 600 秒：剩余 {deadline.remaining():.1f} 秒，到期 "
-          f"{deadline.expired()}，这次又秒断")
+          f"{deadline.expired()}，前跳一样拨不动")
 
 
 def demo_round_trip():
@@ -79,12 +80,49 @@ def main():
     demo_deadline()
     demo_calibration()
     demo_round_trip()
+    demo_estimator()
 
-    # TODO(偏移估计): OffsetEstimator 落地后，在这里补一段演示：
-    # 1) 干净链路上采一段，估计贴住真值，error_bound 真的兜得住真值
-    # 2) 链路加延迟尖峰与错误样本，估计不被带偏，confidence 跟着降
-    # 3) 墙钟回拨与前跳期间，超时与估计纹丝不动
-    # 4) 上万轮采样之后估计不漂、单轮耗时不涨
+
+def demo_estimator():
+    section("多次测量的偏移估计")
+    true_offset = -7.5
+
+    source = ManualSource(wall=1_700_000_000.0)
+    peer = PeerClock(true_offset=true_offset)
+    link = Link(base_delay=0.02, jitter=0.004, skew=0.004, seed=2024)
+    estimator = OffsetEstimator(Loopback(source, peer, link))
+    estimate = None
+    for _ in range(200):
+        estimate = estimator.sample()
+    print(f"  干净链路 200 轮：offset {estimate.offset:+.4f} 秒，"
+          f"真值 {true_offset:+.4f}")
+    print(f"  error_bound ±{estimate.error_bound:.4f} 秒，"
+          f"真值落在界内："
+          f"{abs(estimate.offset - true_offset) <= estimate.error_bound}，"
+          f"confidence {estimate.confidence:.2f}")
+
+    dirty_source = ManualSource(wall=1_700_000_000.0)
+    dirty_link = Link(base_delay=0.02, jitter=0.004, skew=0.004,
+                      spike_chance=0.1, spike_factor=25.0,
+                      fault_chance=0.15, fault_shift=1800.0, seed=7)
+    dirty = OffsetEstimator(
+        Loopback(dirty_source, PeerClock(true_offset=true_offset), dirty_link))
+    dirty_estimate = None
+    for round_no in range(400):
+        dirty_estimate = dirty.sample()
+        if round_no % 2 == 0:
+            dirty_source.step_wall(-300.0)
+        else:
+            dirty_source.step_wall(120.0)
+    print(f"  脏链路 400 轮（尖峰 {dirty_link.spikes} 次、错读 "
+          f"{dirty_link.faults} 次、墙钟反复回拨前跳）："
+          f"offset {dirty_estimate.offset:+.4f} 秒，"
+          f"confidence {dirty_estimate.confidence:.2f}")
+
+    for _ in range(10000):
+        dirty_estimate = dirty.sample()
+    print(f"  再跑上万轮：offset {dirty_estimate.offset:+.4f} 秒，"
+          f"error_bound ±{dirty_estimate.error_bound:.4f} 秒，不漂不涨")
 
 
 if __name__ == "__main__":

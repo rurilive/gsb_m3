@@ -31,6 +31,23 @@
 `steadyclock/estimator.py` 提供 `OffsetProbe(loopback)`，`probe()` 单发
 估计一次对端与本机的钟差。
 
+## 单调口径与多次估计
+
+超时、耗时与本地打戳一律走 `monotonic()`，校时拨不动：
+
+- `Deadline` 与 `Stopwatch` 的起止差从单调钟上取，墙钟回拨不再假死、
+  前跳不再秒断
+- `Loopback` 的本地两个戳打在单调钟上，与对端墙上钟同一根时间轴
+
+`steadyclock/estimator.py` 的 `OffsetEstimator(loopback, window)` 把
+单发口径升级成多次测量：每趟往返算 NTP 式偏移与往返时延，
+`sample()` 交出 `Estimate(offset, error_bound, confidence)`。
+`error_bound` 由被选中样本的往返时延一半加散布合成，真值落在界内。
+
+`steadyclock/filter.py` 的 `OffsetFilter` 负责滤波：中位数加 MAD 做
+离群剔除，再挑时延最低的一段取中位数做平滑；窗口定长，收敛后不抖，
+上万轮不漂、误差界不涨、单轮耗时不涨。
+
 ## 目标
 
 见任务描述。约束：
