@@ -32,3 +32,11 @@
 python3 demo.py                          # 按批推送演示
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 实现说明
+
+- 水位存 `WatermarkStore(path)` 的追加日志：每行 `RXC1\tseq\tpushed\tts\tcrc32`，历史点全保留，`points()` 可取，`fsync=False` 可关刷盘
+- 半截怎么判废：必须有完整换行、5 个字段、CRC32 命中、序号严格递增；任一不满足，该行及之后全部丢弃并截断文件
+- 顺序保证：`run()` 先 `push()` 等下游收妥，再 `save()` 落确认水位；重启 `load()` 先认水位，`fetch(水位, n)` 只取其后，绝不把水位跑到已推前头
+- 丢弃计数：`DedupSink` 对 `seq <= watermark` 的重复/乱序记录一律不收，`stats()["dropped"]` 累计，水位只增不减
+- 阻塞计数：`StreamRunner(..., buffer_size=N)` 用有界缓冲在独立线程取数，满了 `put` 挂起即停止从来源取，`progress()["blocked"]` 记阻塞次数
