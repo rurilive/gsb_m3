@@ -8,6 +8,7 @@
 """
 
 from cmdparse.diagnostics import ParseError
+from cmdparse.lexer import tokenize
 from cmdparse.tokenizer import split_words
 
 
@@ -28,6 +29,7 @@ class CommandDocument:
             )
         self._text = text
         self._lines = text.split("\n")
+        self._token_cache = None
 
     def line_count(self):
         """切出来的行数。"""
@@ -54,6 +56,27 @@ class CommandDocument:
             if words:
                 result.append((number, words))
         return result
+
+    def tokens(self):
+        """走新词法逐行给词素，空行跳过；返回 (行号, Token 列表) 的列表。
+
+        与 :meth:`commands` 不同，这里在整块文本上跑一遍
+        :func:`cmdparse.lexer.tokenize`，所以行尾续行、跨行引号都认得；
+        跨了行的词素归在它起点所在的那一行。词法失败时原样抛
+        :class:`ParseError`，行列指回整块文档。
+        """
+        if self._token_cache is None:
+            grouped = {}
+            order = []
+            for token in tokenize(self._text):
+                if token.start_line not in grouped:
+                    grouped[token.start_line] = []
+                    order.append(token.start_line)
+                grouped[token.start_line].append(token)
+            self._token_cache = [
+                (number, grouped[number]) for number in order
+            ]
+        return self._token_cache
 
     def word_count(self):
         """全篇词数，空行不计。"""
