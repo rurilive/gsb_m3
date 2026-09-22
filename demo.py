@@ -3,10 +3,13 @@
 第一段：三张表按声明顺序执行，看结果和探测行数。
 第二段：同一条查询换一个手写的执行顺序，结果一样，探测行数差很多。
 第三段：看一眼统计快照。
-末尾留了规划器的演示位子（见文末注释）。
+第四段：规划器拿统计挑顺序，跟声明顺序、穷举最优比探测行数。
+第五段：十一张表看规划耗时，以及统计过期时计划怎么退化。
 """
 
+import itertools
 import random
+import time
 
 from jqplan.engine import Engine, Plan, Query
 from jqplan.planner import Planner
@@ -67,9 +70,40 @@ def main():
     print(f"  过期表: {stats.stale([users, orders, items])}")
     print(f"  规划器默认计划: {Planner().plan(query).order}")
 
-    # TODO(连接顺序规划): 代价规划落地后，在这里加一段演示：
-    # 让 Planner 拿着上面的统计挑顺序，跟手写顺序、穷举最优比探测行数，
-    # 再拿十几张表看一眼规划耗时，以及统计过期时计划怎么退化。
+    print("=== 代价规划 ===")
+    planner = Planner()
+    print(f"  连接组: {planner.components(query)}")
+    planned = planner.plan(query, stats)
+    by_planned = engine.execute_plan(query, planned)
+    print(f"  规划顺序: {planned.order}，探测 {by_planned.rows_scanned} 行")
+    best_scan, best_order = min(
+        (engine.execute_plan(query, Plan(perm)).rows_scanned, perm)
+        for perm in itertools.permutations(query.table_names())
+    )
+    print(f"  穷举最优: {best_order}，探测 {best_scan} 行")
+    print(f"  结果一致: {sorted(by_planned.rows) == sorted(by_declared.rows)}")
+
+    print("=== 十一张表的规划耗时 ===")
+    rng = random.Random(11)
+    chain_tables = []
+    for i in range(11):
+        table = Table(f"t{i}", ["k", "v"])
+        table.insert_many([(k, rng.randrange(50)) for k in range(20 + i * 5)])
+        chain_tables.append(table)
+    chain_joins = [(f"t{i}", "k", f"t{i + 1}", "k") for i in range(10)]
+    chain_query = Query(chain_tables, chain_joins)
+    chain_stats = Stats.collect(chain_tables)
+    started = time.perf_counter()
+    chain_plan = planner.plan(chain_query, chain_stats)
+    elapsed = time.perf_counter() - started
+    print(f"  规划耗时: {elapsed * 1000:.1f} ms")
+    print(f"  规划顺序: {chain_plan.order}")
+
+    print("=== 统计过期退回声明顺序 ===")
+    stale_stats = Stats.collect([users, orders, items])
+    orders.insert((1000, 1, 99))
+    print(f"  过期表: {stale_stats.stale([users, orders, items])}")
+    print(f"  退回计划: {planner.plan(query, stale_stats).order}")
 
     print("=== 完 ===")
 
