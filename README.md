@@ -21,9 +21,11 @@ watcher.stop()
 events = watcher.poll()  # 扫一遍，返回这批事件，同时喂给回调
 ```
 
-- `Watcher(root, fs=None, clock=time.time, interval=0.5)`：`fs` 是文件系统
-  访问的替身（默认 `SysFS`），`clock` 是时钟，默认挂钟，和文件 mtime 在同一根
-  时间轴上；测试里可以换成 `snapwatch.ManualClock`
+- `Watcher(root, fs=None, clock=time.time, interval=0.5, debounce=0.25,
+  granularity=1.0)`：`fs` 是文件系统访问的替身（默认 `SysFS`），`clock`
+  是时钟，默认挂钟，和文件 mtime 在同一根时间轴上；测试里可以换成
+  `snapwatch.ManualClock`。`debounce` 是变化静默多少秒后才发布；
+  `granularity` 是文件系统的时间戳精度（秒），见文末
 - `poll()`：扫一遍并返回事件列表，回调按同一顺序逐个收到同一批事件对象
 - `subscribe(callback)`：挂回调
 - `start()` / `stop()`：后台线程模式，stop 可以重复调
@@ -54,6 +56,22 @@ events = watcher.poll()  # 扫一遍，返回这批事件，同时喂给回调
 ## 运行
 
 ```bash
-python3 demo.py                          # 现状演示，四类现场
+python3 demo.py                          # 行为演示，四类现场
 python3 -m unittest discover -s tests -v # 行为基线测试
 ```
+
+## 时间戳精度怎么处理
+
+有些文件系统的 mtime 只精确到秒：同一秒里连写两笔、长度又一样时，
+mtime、大小、inode 全都没变，光看元数据第二笔就漏了。snapwatch 这样应对：
+
+- 状态里除了 `(is_dir, size, mtime_ns, inode)` 还带内容 digest（sha256），
+  元数据分辨不了时靠 digest 分出真假变化
+- 但不可能每轮都重读全部文件。`granularity`（默认 1 秒）给出时间戳精度的
+  上界：mtime 所在的时间片还没走完时，同一片内的再写不会改变 mtime，
+  这段时间内的文件每轮重读一次 digest；时间片走完后再做最后一次确认读，
+  之后内容不可能再变（再写一定会把 mtime 钉到更新的时间片），就不再读了
+- 所以一棵静止的树（所有 mtime 的时间片都已走完）扫一轮只做 stat，
+  一个字节的内容都不读；只有刚变动过的文件会在短时间窗内被重读
+- `granularity` 要设成不小于文件系统真实的时间戳精度，估大只会多确认
+  几次、不影响正确性；纳秒级精度的盘可以调小，减少重读窗口
