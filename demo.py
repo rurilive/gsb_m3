@@ -8,6 +8,12 @@ import tempfile
 
 from sealstore import SealStore, empty_digest, record_digest
 from sealstore import journal
+from sealstore import (
+    MerkleTree,
+    proof_from_bytes,
+    verify_consistency,
+    verify_inclusion,
+)
 
 
 def sample_records():
@@ -45,7 +51,41 @@ def main():
         print("claimed digest:", journal.verify(path)[:16] + "...")
 
         # ---- extension demo slot ----
-        # Hook new per-record proof capabilities in here once they land.
+        # Per-record proofs: build the same batch as a Merkle tree.
+        tree = MerkleTree(sample_records())
+        print()
+        print("merkle root:", tree.root()[:16] + "...")
+
+        proof = tree.inclusion_proof(1)
+        print(
+            "inclusion proof for id=2: %d hashes, verifies %s"
+            % (len(proof.path), verify_inclusion(tree.root(), sample_records()[1], proof))
+        )
+        wrong = dict(sample_records()[1])
+        wrong["amount"] = 9999
+        print("tampered record verifies:", verify_inclusion(tree.root(), wrong, proof))
+
+        reloaded = proof_from_bytes(proof.to_bytes())
+        print("proof survives a bytes round trip:", reloaded == proof)
+
+        old_root = MerkleTree(sample_records()[:2]).root()
+        consistency = tree.consistency_proof(2)
+        print(
+            "consistency 2 -> %d records: %s"
+            % (
+                len(tree),
+                verify_consistency(old_root, tree.root(), consistency),
+            )
+        )
+
+        changed = list(sample_records())
+        changed[0] = {"id": 1, "kind": "payment", "amount": 42.0, "currency": "CNY"}
+        rebuilt = MerkleTree(changed)
+        count = tree.update(0, changed[0])
+        print(
+            "single update recomputed %d nodes, root matches full rebuild: %s"
+            % (count, tree.root() == rebuilt.root())
+        )
 
 
 if __name__ == "__main__":
