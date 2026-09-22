@@ -1,4 +1,10 @@
-"""快照扫描：走一遍目录树，把每个节点的元数据和内容摘要记下来。"""
+"""快照扫描：走一遍目录树，只记元数据；内容摘要按需懒算。
+
+静止的树扫一轮只读目录、不读文件内容：Entry 的 digest 留空，等比对逻辑
+确认有必要（新文件、元数据变了、还在时间戳精度窗口内等）才算 sha256。
+目录存在但 scandir 失败（比如被 chmod 掉）时记进 Snapshot.unlisted，
+让上层把整棵子树当成"看不清楚、保持原状"而不是删除。
+"""
 
 import hashlib
 import os
@@ -40,6 +46,7 @@ class Snapshot:
     def __init__(self, root):
         self.root = root
         self.entries = {}
+        self.unlisted = set()
 
     def entry(self, path):
         """相对路径对应的 Entry，没有这个路径时抛 KeyError。"""
@@ -71,6 +78,11 @@ class PollScanner:
         try:
             names = self.fs.scandir(self._abs(rel))
         except OSError:
+            try:
+                self.fs.stat(self._abs(rel))
+            except OSError:
+                return
+            snapshot.unlisted.add(rel)
             return
         for name in names:
             child = name if not rel else rel + "/" + name
@@ -78,12 +90,8 @@ class PollScanner:
                 info = self.fs.stat(self._abs(child))
             except OSError:
                 continue
-            digest = None
-            if not info.is_dir:
-                content = self.fs.read_bytes(self._abs(child))
-                digest = hashlib.sha256(content).hexdigest()
             snapshot.entries[child] = Entry(
                 child, info.is_dir, info.mtime_ns, info.size, info.inode,
-                abs_path=self._abs(child), fs=self.fs, digest=digest)
+                abs_path=self._abs(child), fs=self.fs)
             if info.is_dir:
                 self._walk(child, snapshot)
