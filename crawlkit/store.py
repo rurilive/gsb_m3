@@ -1,8 +1,11 @@
 """抓取队列的去重门面：标记已入队的 URL、判重、必要时撤销。"""
 
+import math
 import struct
 
+from . import bloom, cuckoo
 from .bloom import BloomFilter
+from .cuckoo import CuckooFilter
 from .errors import NotSupportedError
 
 MAGIC = b"DDS1"
@@ -15,12 +18,24 @@ class DedupStore:
 
     mark 记下一条 URL，is_duplicate 回答它之前是否标记过，
     retry 把一条 URL 从集合里撤下来。底层是近似结构，判重会多报不会漏报。
+    backend="bloom" 只加不删，backend="cuckoo" 支持真删。
     """
 
-    def __init__(self, capacity, fp_rate=0.01):
+    def __init__(self, capacity, fp_rate=0.01, backend="bloom"):
         self.capacity = int(capacity)
         self.fp_rate = float(fp_rate)
-        self._filter = BloomFilter(self.capacity, self.fp_rate)
+        self.backend = str(backend)
+        if self.backend == "bloom":
+            self._filter = BloomFilter(self.capacity, self.fp_rate)
+        elif self.backend == "cuckoo":
+            if not 0.0 < self.fp_rate < 1.0:
+                raise ValueError("fp_rate must be in (0, 1)")
+            fp_bits = max(
+                1, math.ceil(math.log2(2.0 * CuckooFilter.BUCKET_SIZE / self.fp_rate))
+            )
+            self._filter = CuckooFilter(self.capacity, fp_bits)
+        else:
+            raise ValueError("unknown backend: %r" % (self.backend,))
         self._marks = 0
         self._queries = 0
         self._duplicates = 0
@@ -41,9 +56,12 @@ class DedupStore:
     def retry(self, key):
         """把一条 URL 从去重集合里撤下来，让重试的抓取不再被判成重复。
 
-        布隆过滤器删不了位，这里没得商量。
+        布隆过滤器删不了位，这里没得商量；布谷鸟过滤器真删，返回是否撤到了。
         """
-        raise NotSupportedError("current backend cannot remove keys")
+        remove = getattr(self._filter, "remove", None)
+        if remove is None:
+            raise NotSupportedError("current backend cannot remove keys")
+        return remove(key)
 
     def stats(self):
         """计数快照，独立 dict，filter 键下是底层过滤器的统计。"""
@@ -51,6 +69,7 @@ class DedupStore:
             "marks": self._marks,
             "queries": self._queries,
             "duplicates": self._duplicates,
+            "backend": self.backend,
             "filter": self._filter.stats(),
         }
 
@@ -65,8 +84,18 @@ class DedupStore:
         magic, marks, queries, duplicates, fp_rate = _HEADER.unpack(blob[:_HEADER.size])
         if magic != MAGIC:
             raise ValueError("bad magic: %r" % (magic,))
+        payload = blob[_HEADER.size:]
+        if payload[:4] == bloom.MAGIC:
+            filt = BloomFilter.from_bytes(payload)
+            backend = "bloom"
+        elif payload[:4] == cuckoo.MAGIC:
+            filt = CuckooFilter.from_bytes(payload)
+            backend = "cuckoo"
+        else:
+            raise ValueError("bad filter magic: %r" % (payload[:4],))
         obj = cls.__new__(cls)
-        obj._filter = BloomFilter.from_bytes(blob[_HEADER.size:])
+        obj._filter = filt
+        obj.backend = backend
         obj.capacity = obj._filter.capacity
         obj.fp_rate = fp_rate
         obj._marks = marks
