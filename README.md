@@ -26,14 +26,18 @@
 `pack_frame()` / `unpack_frame()`、`pack_window()` / `unpack_window()`、
 按块喂入的 `FrameBuffer`）；`transport.py` 是内存连接（`MemoryLink.pair()`
 建一对 `Endpoint`，`SystemClock` / `ManualClock`）；`session.py` 是串行的
-`Session` 和把两端泵到安静的 `pump_all()`。
+`Session` 和把两端泵到安静的 `pump_all()`；`mux.py` 是多路复用，
+`MuxConn(endpoint, role, window)` 在一条连接上并发跑多条 `Stream`
+（`open_stream()` / `accept()` / `pump()`，`send()` / `recv()` / `close()` /
+`reset()`），帧按流号分发重组，每条流独立接收窗口，额度用光只停自己这条，
+支持半关闭和重置。
 
 ```bash
-python3 demo.py                           # 帧布局、串行往返、分片、延迟、重置
+python3 demo.py                           # 帧布局、串行往返、分片、重置、多路复用
 python3 -m unittest discover -s tests -v  # 既有行为基线测试
 ```
 
 `tests/` 下的用例锁的是线上现有行为：帧格式、串行 `Session` 的语义
 （一次一对、流号步长、分片口径、reset 的表现）都是对外的接口约定，
-改动前先跑一遍。`Session` 一次只跑一对请求响应，采集端的多路数据
-目前只能在应用层排队。
+改动前先跑一遍。`Session` 一次只跑一对请求响应；采集端的多路数据
+要并发走一条连接就用 `mux.py` 的 `MuxConn`，演示见 demo.py 最后一节。

@@ -13,5 +13,6 @@ from linkmux.frame import (
     WINDOW_PAYLOAD_SIZE, Frame, FrameBuffer, check_frame, pack_frame, pack_window,
     unpack_frame, unpack_window,
 )
+from linkmux.mux import ROLE_CLIENT, ROLE_SERVER, ROLES, MuxConn, Stream
 from linkmux.session import Message, Session, pump_all
 from linkmux.transport import Endpoint, ManualClock, MemoryLink, SystemClock
