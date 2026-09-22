@@ -2,12 +2,14 @@
 
 from .backend import MemoryBackend
 from .device import SimDevice
+from .scheduler import Scheduler
 from .segment import Segment, merge_pairs, merge_units
 from .store import CompactReport, Store
 
 __all__ = [
     "Store",
     "CompactReport",
+    "Scheduler",
     "Segment",
     "MemoryBackend",
     "SimDevice",
