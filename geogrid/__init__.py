@@ -2,6 +2,7 @@
 
 from .cells import DEFAULT_CELL_DEG, cell_of
 from .errors import DuplicateId, GeoError, InvalidCoordinate, UnknownId
+from .geocode import decode, encode, neighbors
 from .geo import EARTH_RADIUS_M, haversine_m, normalize_lon
 from .index import PointIndex
 
@@ -14,6 +15,9 @@ __all__ = [
     "PointIndex",
     "UnknownId",
     "cell_of",
+    "decode",
+    "encode",
     "haversine_m",
+    "neighbors",
     "normalize_lon",
 ]
