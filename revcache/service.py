@@ -2,12 +2,31 @@
 
 调用方只跟 CachedStore 打交道：读尽量由本地缓存满足，未命中回源并
 把结果放进缓存；写先落到数据源，再让缓存里该 key 的副本失效。
+
+并发语义：
+
+- 每个 key 有一个失效代际号，写和删在清缓存的同一把锁里推高它。
+  回源前记下代际号，取回值后只有代际号没变才把结果放进缓存，
+  所以卡在回源里的慢读不会把改前的旧值盖回缓存。
+- 同一个 key 的并发未命中合并成一次回源，其余线程等这一次的结果，
+  缓存被清空后不会出现几十路一起回源。
+- 回源失败不往缓存里写；缓存自己写不进去时降级成直连，本次读到的
+  值照样返回。
 """
 
 import threading
 
 from revcache.backend import Backend, TransientError
-from revcache.cache import ValueCache
+from revcache.cache import CacheError, ValueCache
+
+
+class _LoadSlot:
+    """一次进行中的回源，同 key 的后来者等它出结果，不再各回各的源。"""
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.value = None
+        self.error = None
 
 
 class CachedStore:
@@ -22,6 +41,8 @@ class CachedStore:
         self.backend = backend
         self.cache = cache
         self._lock = threading.Lock()
+        self._generations = {}
+        self._inflight = {}
         self._reads = 0
         self._hits = 0
         self._misses = 0
@@ -43,30 +64,56 @@ class CachedStore:
             return value
         with self._lock:
             self._misses += 1
+            slot = self._inflight.get(key)
+            if slot is None:
+                slot = _LoadSlot()
+                self._inflight[key] = slot
+                leader = True
+                generation = self._generations.get(key, 0)
+            else:
+                leader = False
+        if not leader:
+            slot.done.wait()
+            if slot.error is not None:
+                raise slot.error
+            return slot.value
         try:
-            value = self.backend.get(key)
-        except KeyError:
-            raise
-        except TransientError:
+            try:
+                value = self.backend.get(key)
+            except KeyError as exc:
+                slot.error = exc
+                raise
+            except TransientError as exc:
+                slot.error = exc
+                with self._lock:
+                    self._load_errors += 1
+                raise
             with self._lock:
-                self._load_errors += 1
-            self.cache.put(key, None)
-            raise
-        with self._lock:
-            self._loads += 1
-        self.cache.put(key, value)
-        return value
+                self._loads += 1
+                if self._generations.get(key, 0) == generation:
+                    try:
+                        self.cache.put(key, value)
+                    except CacheError:
+                        pass
+            slot.value = value
+            return value
+        finally:
+            with self._lock:
+                self._inflight.pop(key, None)
+            slot.done.set()
 
     def write(self, key, value):
         self.backend.set(key, value)
-        self.cache.invalidate(key)
         with self._lock:
+            self._generations[key] = self._generations.get(key, 0) + 1
+            self.cache.invalidate(key)
             self._writes += 1
 
     def delete(self, key):
         existed = self.backend.delete(key)
-        self.cache.invalidate(key)
         with self._lock:
+            self._generations[key] = self._generations.get(key, 0) + 1
+            self.cache.invalidate(key)
             self._deletes += 1
         return existed
 

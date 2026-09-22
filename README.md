@@ -21,6 +21,9 @@
   失败时抛 `TransientError`。`write(key, value)` 先更新数据源再让缓存里该
   key 的副本失效。`delete(key)` 两边一起删，返回 key 原先是否存在。
   `stats()` 给出 reads、hits、misses、loads、load_errors、writes、deletes。
+  并发语义：每个 key 有失效代际号，写/删在清缓存的同一把锁里推高它，回源
+  结果只在代际号没变时才进缓存，慢读不会把旧值盖回；同一个 key 的并发未
+  命中合并成一次回源；回源失败不缓存；缓存写失败降级为直连，不影响读返回。
 
 ## 计数器口径
 
