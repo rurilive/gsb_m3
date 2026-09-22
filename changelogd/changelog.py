@@ -11,6 +11,18 @@ from collections import namedtuple
 Change = namedtuple("Change", ["obj", "field", "value", "version", "ts"])
 
 
+class _Deleted:
+    """删除标记的类型，单例见 DELETED。"""
+
+    def __repr__(self):
+        return "DELETED"
+
+
+# 字段删除标记：作为 value 传给 append 表示删除该字段；
+# at 重建快照时该字段不出现，history 里仍能看到这条记录。
+DELETED = _Deleted()
+
+
 class ChangeLog:
     """单条时间线上的字段变更日志。
 
@@ -36,12 +48,16 @@ class ChangeLog:
         """重建 obj 在给定版本的快照。
 
         每个字段取 append 顺序里最后一条 version 不超过给定值的变更；
-        在此之前该字段没有变更则不出现。返回新 dict。
+        在此之前该字段没有变更则不出现；值为 DELETED 的字段被移除。
+        返回新 dict。
         """
         snapshot = {}
         for change in self._entries.get(obj, ()):
             if change.version <= version:
-                snapshot[change.field] = change.value
+                if change.value is DELETED:
+                    snapshot.pop(change.field, None)
+                else:
+                    snapshot[change.field] = change.value
         return snapshot
 
     def objects(self):

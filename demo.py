@@ -1,10 +1,22 @@
 """ChangeLog 现状演示。
 
 第一段：单条时间线上追加变更、取全文、重建旧版本快照。
-第二段：预留的多分支合并演示位子（见文末注释）。
+第二段：两条分支从同一版本分叉后合并，含冲突消解与删除语义。
 """
 
-from changelogd.changelog import ChangeLog
+from changelogd.changelog import DELETED, ChangeLog
+from changelogd.merge import merge
+
+
+class Tick:
+    """演示用注入时钟：每次调用前进 1 秒。"""
+
+    def __init__(self, start=0.0):
+        self.now = start
+
+    def __call__(self):
+        self.now += 1.0
+        return self.now
 
 
 def main():
@@ -23,13 +35,39 @@ def main():
     for v in (1, 3, 4):
         print(f"  at('doc-1', {v}) -> {log.at('doc-1', v)}")
 
-    # TODO(合并改造): 多分支合并实现后，在这里加一段演示：
-    # 从某个版本分叉出两条分支，各自 append（含同字段不同值的冲突、
-    # 各自独有的字段、以及删除后又被人改的字段），按默认策略合并，
-    # 打印合并结果的来源标注与被消解掉的输家。
+    print("\n=== 多分支合并 ===")
+    # 老张和小李从 v4 分叉，各自动手
+    zhang = ChangeLog(clock=Tick(100.0))
+    zhang.append("doc-1", "title", "老张的标题", 5)
+    zhang.append("doc-1", "status", "review", 5)
+    zhang.append("doc-1", "tag", DELETED, 6)  # 老张把标签删了
+    li = ChangeLog(clock=Tick(200.0))
+    li.append("doc-1", "status", "published", 5)
+    li.append("doc-1", "tag", "release", 6)  # 小李还在改标签
+    li.append("doc-1", "owner", "li", 7)
 
-    print("\n=== 多分支合并（待实现） ===")
-    print("  见上方 TODO 注释。")
+    merged = ChangeLog(clock=Tick())
+    result = merge(
+        merged,
+        "doc-1",
+        [("老张", zhang.history("doc-1")), ("小李", li.history("doc-1"))],
+        start_version=8,
+    )
+
+    print("  合并结果（带来源）：")
+    for entry in result.entries:
+        c = entry.change
+        print(f"    v{c.version} {c.field} = {c.value!r}  <- {entry.source}")
+
+    print("  冲突与输家：")
+    for conflict in result.conflicts:
+        losers = ", ".join(
+            f"{o.source}:{o.change.value!r}" for o in conflict.losers)
+        print(f"    {conflict.field}: {conflict.winner.source} 胜，"
+              f"被消解：{losers}")
+
+    print(f"  最终快照：{result.snapshot()}")
+    print(f"  merged.at('doc-1', 11) -> {merged.at('doc-1', 11)}")
 
 
 if __name__ == "__main__":
