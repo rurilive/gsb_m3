@@ -8,12 +8,18 @@ from fixedpt import ledger
 from fixedpt.domain import Domain
 from fixedpt.errors import DomainOverflow, FixedPointError, ParseError
 from fixedpt.number import Fixed
+from fixedpt.rounding import CEIL, FLOOR, HALF_EVEN, TRUNC, UP
 
 __all__ = [
+    "CEIL",
     "Domain",
     "DomainOverflow",
+    "FLOOR",
     "Fixed",
     "FixedPointError",
+    "HALF_EVEN",
     "ParseError",
+    "TRUNC",
+    "UP",
     "ledger",
 ]
