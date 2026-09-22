@@ -2,7 +2,9 @@
 
 第一段：定标值怎么存、怎么算，跨 scale 的加减与比较是精确的。
 第二段：清算例行，计息与分账，分账保证一分不差。
-第三段：域宽和溢出策略现在的样子，以及留给舍入与文本互转的位子。
+第三段：域宽与三种溢出策略。
+第四段：五种舍入模式下的乘除。
+第五段：文本互转，科学计数法与超长小数都走得通。
 """
 
 from fixedpt import Domain, DomainOverflow, Fixed, ledger
@@ -35,10 +37,27 @@ def main():
         small.add(Fixed(100, 0), Fixed(40, 0))
     except DomainOverflow as exc:
         print("add 越界:", exc)
-    print("mul 现在不收口:", small.mul(Fixed(100, 0), Fixed(40, 0)))
+    try:
+        small.mul(Fixed(100, 0), Fixed(40, 0))
+    except DomainOverflow as exc:
+        print("mul 越界(raise):", exc)
+    sat = Domain(bits=8, scale=0, overflow="saturate")
+    print("mul 饱和:", sat.mul(Fixed(100, 0), Fixed(40, 0)))
+    wrap = Domain(bits=8, scale=0, overflow="wrap")
+    print("mul 回绕:", wrap.mul(Fixed(100, 0), Fixed(40, 0)))
 
-    # TODO(舍入与文本): 舍入模式、乘除定标收口、Domain.parse 与 Domain.text
-    # 落地后，在这里补一段带模式的乘除和一张文本互转的表。
+    print("=== 舍入模式 ===")
+    for mode in ("truncate", "away", "floor", "ceil", "half_even"):
+        dm = Domain(bits=64, scale=0, rounding=mode)
+        pos = dm.mul(Fixed(25, 1), Fixed(1, 0), out_scale=0)   # 2.5
+        neg = dm.mul(Fixed(-25, 1), Fixed(1, 0), out_scale=0)  # -2.5
+        print("%-9s 2.5 -> %s  -2.5 -> %s" % (mode, pos.unscaled, neg.unscaled))
+
+    print("=== 文本互转 ===")
+    d2 = Domain(bits=64, scale=2, rounding="half_even")
+    for raw in ("12.3400", "1.2e3", "-.5", "1.005", "3.14159265"):
+        value = d2.parse(raw)
+        print("%-12s -> %-18s -> %s" % (raw, value, d2.text(value)))
 
 
 if __name__ == "__main__":

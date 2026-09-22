@@ -9,7 +9,7 @@ Fixed 只做精确运算与比较，不带精度策略，也不做范围检查�
 """
 
 from fixedpt.errors import FixedPointError
-from fixedpt.rounding import div_trunc
+from fixedpt.rounding import check_mode, div_round
 
 
 class Fixed:
@@ -126,44 +126,50 @@ class Fixed:
 
     # ---- 定标与乘除 ----
 
-    def rescaled(self, scale):
+    def rescaled(self, scale, rounding="truncate"):
         """落到指定 scale。
 
-        往大走精确；往小走丢掉低位，低位朝零截断。
+        往大走精确；往小走丢掉低位，低位按 rounding 模式舍入，
+        默认朝零截断。
         """
         if isinstance(scale, bool) or not isinstance(scale, int) or scale < 0:
             raise FixedPointError("scale must be a non-negative int: %r" % (scale,))
+        check_mode(rounding)
         if scale >= self._scale:
             return Fixed(self._unscaled * 10 ** (scale - self._scale), scale)
-        return Fixed(div_trunc(self._unscaled, 10 ** (self._scale - scale)), scale)
+        return Fixed(
+            div_round(self._unscaled, 10 ** (self._scale - scale), rounding), scale)
 
-    def mul(self, other, out_scale=None):
+    def mul(self, other, out_scale=None, rounding="truncate"):
         """乘：两边 scale 之和是精确乘积，再落到 out_scale。
 
-        out_scale 默认取两边较大的 scale。落定标时低位朝零截断。
+        out_scale 默认取两边较大的 scale。落定标时低位按 rounding
+        模式舍入，默认朝零截断。
         结果不收口。
         """
         a, b = self._pair(self, other)
         if out_scale is None:
             out_scale = max(a._scale, b._scale)
         exact = Fixed(a._unscaled * b._unscaled, a._scale + b._scale)
-        return exact.rescaled(out_scale)
+        return exact.rescaled(out_scale, rounding)
 
-    def div(self, other, out_scale=None):
+    def div(self, other, out_scale=None, rounding="truncate"):
         """除：商落到 out_scale，默认取两边较大的 scale。
 
-        低位朝零截断，结果不收口；除数为零抛 ZeroDivisionError。
+        低位按 rounding 模式舍入，默认朝零截断，结果不收口；
+        除数为零抛 ZeroDivisionError。
         """
         a, b = self._pair(self, other)
         if b._unscaled == 0:
             raise ZeroDivisionError("division by zero")
         if out_scale is None:
             out_scale = max(a._scale, b._scale)
+        check_mode(rounding)
         shift = b._scale + out_scale - a._scale
         if shift >= 0:
-            got = div_trunc(a._unscaled * 10 ** shift, b._unscaled)
+            got = div_round(a._unscaled * 10 ** shift, b._unscaled, rounding)
         else:
-            got = div_trunc(a._unscaled, b._unscaled * 10 ** (-shift))
+            got = div_round(a._unscaled, b._unscaled * 10 ** (-shift), rounding)
         return Fixed(got, out_scale)
 
     def __mul__(self, other):
