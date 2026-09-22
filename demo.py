@@ -1,4 +1,4 @@
-"""stealpool 现状演示：提交取结果、任务树对拍、取消一个还没开跑的任务。"""
+"""stealpool 演示：提交取结果、任务树对拍、取消、工作窃取特性。"""
 
 import threading
 import time
@@ -60,9 +60,55 @@ def main():
         blocker.result(5.0)
     pool.shutdown()
 
-    # TODO(工作窃取改造): 换成窃取版调度后，在这里补一段演示：不匀称的
-    # 任务树上各 worker 的分工、单 worker 跑深链、取消整条链时没开跑的
-    # 子任务不执行，以及 stats 里的偷取计数。
+    print("=== 一头沉的任务树：各 worker 分工与偷取 ===")
+    def skewed(level, counter=[0]):
+        # 每个节点挂一个重子树加一片轻叶子，活明显偏向一边
+        counter[0] += 1
+        name = "skew%d" % counter[0]
+        if level <= 0:
+            return TaskNode(name, work=0.01, tag=1)
+        return TaskNode(name, (skewed(level - 1), TaskNode(name + "s", work=0.01, tag=1)),
+                        work=0.01, tag=1)
+
+    with Pool(4) as skew_pool:
+        TreeRunner(skew_pool).run(skewed(11))
+        time.sleep(0.05)
+    snap = skew_pool.stats()
+    print("  每 worker 忙碌秒数:", ["%.3f" % s for s in snap["busy_seconds"]])
+    print("  每 worker 任务数:", snap["tasks"], "偷取次数:", snap["steals"])
+
+    print("=== 单 worker 跑 500 层深链（等子任务时不空等） ===")
+    with Pool(1) as single:
+        def link(n):
+            if n == 0:
+                return 0
+            return single.submit(link, n - 1).result() + 1
+        started = time.monotonic()
+        print("  结果:", single.submit(link, 500).result(),
+              "耗时 %.3fs" % (time.monotonic() - started))
+
+    print("=== 取消整条链：没开跑的子任务一并作废，在干活的不打断 ===")
+    pool = Pool(2)
+    gate = threading.Event()
+
+    def chain_parent():
+        running = pool.submit(gate.wait, 5.0)  # 会被另一个 worker 偷走执行
+        queued = [pool.submit(fetch, "queued-%d" % i) for i in range(3)]
+        time.sleep(0.2)  # 留时间让 running 被偷走、queued 留在队列里
+        return running, queued
+
+    parent_future = pool.submit(chain_parent)
+    time.sleep(0.1)
+    print("  cancel 运行中的父任务返回:", parent_future.cancel())
+    gate.set()
+    running, queued = parent_future.result()
+    print("  在干活的子任务照常完成:", running.result())
+    for child in queued:
+        try:
+            child.result()
+        except TaskCancelled:
+            print("  排队子任务已作废: cancelled=%s" % child.cancelled())
+    pool.shutdown()
 
 
 if __name__ == "__main__":

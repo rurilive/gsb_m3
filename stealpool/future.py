@@ -24,6 +24,10 @@ class Future:
         self._result = None
         self._exception = None
         self._callbacks = []
+        # 下面三个由 Pool 在 submit 时装配；裸 Future 保持原行为
+        self._pool = None
+        self._children = []
+        self._cancel_hook = None
 
     @property
     def _settled(self):
@@ -51,12 +55,19 @@ class Future:
         """尝试取消，只有还在 PENDING 的任务能取消成功。"""
         with self._condition:
             if self._state != PENDING:
-                return False
-            self._state = CANCELLED
-            self._condition.notify()
-            callbacks = self._take_callbacks()
+                transitioned = False
+                callbacks = []
+            else:
+                self._state = CANCELLED
+                self._condition.notify()
+                callbacks = self._take_callbacks()
+                transitioned = True
+            hook = self._cancel_hook
         self._fire(callbacks)
-        return True
+        if hook is not None:
+            # 池挂的级联取消：派生出去还没开跑的子孙任务一并作废
+            hook(self)
+        return transitioned
 
     def set_running_or_notify_cancel(self):
         """worker 取走任务时调用；返回 False 表示任务已被取消，别再执行。"""
@@ -78,6 +89,10 @@ class Future:
 
     def result(self, timeout=None):
         """阻塞取结果；被取消抛 TaskCancelled，任务抛过异常就重新抛出。"""
+        pool = self._pool
+        if pool is not None:
+            # worker 线程里等结果时不空等，先去帮别人干活
+            pool._help_await(self, timeout)
         with self._condition:
             self._await(timeout)
             self._raise_if_failed()
@@ -85,6 +100,9 @@ class Future:
 
     def exception(self, timeout=None):
         """阻塞取异常，正常结束返回 None，被取消抛 TaskCancelled。"""
+        pool = self._pool
+        if pool is not None:
+            pool._help_await(self, timeout)
         with self._condition:
             self._await(timeout)
             if self._state == CANCELLED:
