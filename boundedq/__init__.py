@@ -1,0 +1,8 @@
+"""boundedq：队列包（纯标准库）。
+
+当前包里只有一个朴素的无界先进先出队列 FifoQueue。
+"""
+
+from .queue import FifoQueue
+
+__all__ = ["FifoQueue"]
